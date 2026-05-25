@@ -258,6 +258,47 @@ def _():
         assert p.state == s
 
 
+@case("stage_just_completed fires when last node completes")
+def _():
+    from rl_agent_tutor.orchestrator import stage_just_completed
+    from rl_agent_tutor.models import LearningPlan, Stage, LearningNode
+    p = LearningPlan(goal="x", stages=[Stage(id=7, name="finale", nodes=[
+        LearningNode(id="7.1", name="a", description="", status="completed"),
+        LearningNode(id="7.2", name="b", description="", status="completed"),
+    ])])
+    s = stage_just_completed(p, "7.2")
+    assert s is not None and s.id == 7
+
+
+@case("stage_just_completed silent when other nodes pending")
+def _():
+    from rl_agent_tutor.orchestrator import stage_just_completed
+    from rl_agent_tutor.models import LearningPlan, Stage, LearningNode
+    p = LearningPlan(goal="x", stages=[Stage(id=8, name="mid", nodes=[
+        LearningNode(id="8.1", name="a", description="", status="completed"),
+        LearningNode(id="8.2", name="b", description="", status="pending"),
+    ])])
+    assert stage_just_completed(p, "8.1") is None
+
+
+@case("stage_just_completed skips if review file already exists")
+def _():
+    from rl_agent_tutor.orchestrator import stage_just_completed
+    from rl_agent_tutor.models import LearningPlan, Stage, LearningNode
+    from rl_agent_tutor.config import workspace_path
+    p = LearningPlan(goal="x", stages=[Stage(id=9, name="dup", nodes=[
+        LearningNode(id="9.1", name="a", description="", status="completed"),
+    ])])
+    review_dir = workspace_path("library", "notes", "reviews")
+    review_dir.mkdir(parents=True, exist_ok=True)
+    sentinel = review_dir / "stage_9_2026-01-01.md"
+    sentinel.write_text("(seen)", encoding="utf-8")
+    try:
+        assert stage_just_completed(p, "9.1") is None
+    finally:
+        sentinel.unlink()
+
+
 # ---------------- indexer mtime cache ----------------
 
 print("\nindexer mtime cache:")

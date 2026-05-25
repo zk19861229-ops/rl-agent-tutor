@@ -11,7 +11,9 @@ that out explicitly instead of leaving the loop wedged.
 """
 from __future__ import annotations
 from datetime import datetime
-from .models import LearningPlan, PlanState
+from pathlib import Path
+from .config import workspace_path
+from .models import LearningPlan, PlanState, Stage
 from .store import save_plan, load_plan
 
 
@@ -35,6 +37,24 @@ def mark_node_completed(plan: LearningPlan, node_id: str) -> None:
     n.status = "completed"
     n.completed_at = datetime.now().isoformat()
     save_plan(plan)
+
+
+def stage_just_completed(plan: LearningPlan, node_id: str) -> Stage | None:
+    """If `node_id` was the LAST pending node in its stage, return the stage.
+
+    Used by callers (CLI advance, web /api/advance) to fire the Reviewer
+    stage_review automatically. Returns None if the stage already had a
+    review file on disk, so we don't double-fire.
+    """
+    s = plan.stage_of(node_id)
+    if not s or not s.nodes:
+        return None
+    if not all(n.status == "completed" for n in s.nodes):
+        return None
+    existing = workspace_path("library", "notes", "reviews").glob(f"stage_{s.id}_*.md")
+    if any(existing):
+        return None
+    return s
 
 
 def advance_to_next(plan: LearningPlan) -> str | None:

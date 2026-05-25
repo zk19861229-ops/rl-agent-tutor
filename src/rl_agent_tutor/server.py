@@ -347,16 +347,34 @@ def post_test_submit(req: TestSubmitReq):
 
 
 @app.post("/api/advance")
-def post_advance():
+async def post_advance():
     p = _plan_or_404()
     if not p.current_node_id:
         raise HTTPException(400, "no current node")
     cur = p.current_node_id
     orchestrator.mark_node_completed(p, cur)
+    completed_stage = orchestrator.stage_just_completed(p, cur)
     new_id = orchestrator.advance_to_next(p)
     append_trajectory(TrajectoryEntry(node_id=cur, kind="advance",
                                       content=f"completed; next={new_id}"))
-    return {"completed": cur, "next": new_id, "plan": p.model_dump()}
+    review_info = None
+    if completed_stage:
+        from . import reviewer
+        try:
+            target = await asyncio.to_thread(reviewer.stage_review, p, completed_stage.id)
+            review_info = {"stage_id": completed_stage.id,
+                           "stage_name": completed_stage.name,
+                           "review_path": str(target)}
+            append_trajectory(TrajectoryEntry(
+                node_id=cur, kind="review",
+                content=f"stage {completed_stage.id} auto-review: {target.name}",
+            ))
+        except Exception as e:
+            review_info = {"stage_id": completed_stage.id,
+                           "stage_name": completed_stage.name,
+                           "error": f"{type(e).__name__}: {e}"}
+    return {"completed": cur, "next": new_id, "plan": p.model_dump(),
+            "stage_review": review_info}
 
 
 class ArchiveReq(BaseModel):

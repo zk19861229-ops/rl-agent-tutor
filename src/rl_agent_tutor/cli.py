@@ -279,6 +279,7 @@ def advance():
     if not typer.confirm(f"Mark node {n.id} ({n.name}) as completed?", default=True):
         raise typer.Exit()
     orchestrator.mark_node_completed(p, n.id)
+    completed_stage = orchestrator.stage_just_completed(p, n.id)
     new_id = orchestrator.advance_to_next(p)
     append_trajectory(TrajectoryEntry(node_id=n.id, kind="advance", content=f"completed; next={new_id}"))
     if new_id:
@@ -286,6 +287,21 @@ def advance():
         console.print(f"[green]✔ {n.id} completed.[/green] [cyan]→ Next: {nxt.id} {nxt.name}[/cyan]")
     else:
         console.print("[green]🎉 All nodes complete! Run `rl-agent review` for a final retrospective.[/green]")
+    if completed_stage:
+        console.print(f"[bold magenta]Stage {completed_stage.id} '{completed_stage.name}' "
+                      f"is now complete — generating stage retrospective...[/bold magenta]")
+        try:
+            from . import reviewer
+            with console.status("[bold]Reviewer reflecting...[/bold]"):
+                target = reviewer.stage_review(p, completed_stage.id)
+            console.print(f"[green]✔ Stage review → {target}[/green]")
+            append_trajectory(TrajectoryEntry(
+                node_id=n.id, kind="review",
+                content=f"stage {completed_stage.id} auto-review: {target.name}",
+            ))
+        except Exception as e:
+            console.print(f"[yellow]⚠ stage review failed ({type(e).__name__}: {e}); "
+                          f"run `rl-agent review-stage {completed_stage.id}` manually.[/yellow]")
 
 
 @app.command()
