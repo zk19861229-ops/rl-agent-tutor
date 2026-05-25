@@ -200,8 +200,10 @@ class IndexReq(BaseModel):
 @app.post("/api/index")
 async def post_index():
     from . import indexer
-    n_pdfs, n_chunks = await asyncio.to_thread(indexer.index_papers)
-    return {"n_pdfs": n_pdfs, "n_chunks": n_chunks, "stats": indexer.index_stats()}
+    n_pdfs, n_chunks, failures = await asyncio.to_thread(indexer.index_papers)
+    return {"n_pdfs": n_pdfs, "n_chunks": n_chunks,
+            "failures": [{"file": f, "error": e} for f, e in failures],
+            "stats": indexer.index_stats()}
 
 
 @app.get("/api/index/stats")

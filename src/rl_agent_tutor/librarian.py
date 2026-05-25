@@ -39,15 +39,21 @@ LIBRARIAN_USER = """Learning node:
 - Description: {desc}
 - Objectives: {objs}
 
-Output JSON:
+Field guide:
+- arxiv_queries: 2-4 specific arxiv queries (paper titles or "author year topic")
+- github_repos: 1-2 high-quality "owner/repo" identifiers
+- blog_urls: 1-3 high-signal blog/article URLs, each {{"url": "...", "why": "<one line>"}}
+- youtube_videos: 0-2 lecture/talk videos, each {{"url_or_id": "...", "title": "...", "why": "..."}}
+
+Return EXACTLY this JSON shape (no comments, no trailing commas):
 {{
-  "arxiv_queries": ["<query1>", "<query2>"],   // 2-4 specific arxiv queries (paper titles or "author year topic")
-  "github_repos": ["owner/repo", ...],           // 1-2 high-quality repos
-  "blog_urls": [                                 // 1-3 high-signal blog/article URLs
-    {{"url": "https://...", "why": "<one line>"}}
+  "arxiv_queries": ["...", "..."],
+  "github_repos": ["owner/repo"],
+  "blog_urls": [
+    {{"url": "https://...", "why": "..."}}
   ],
-  "youtube_videos": [                            // 0-2 lecture/talk videos
-    {{"url_or_id": "https://youtube.com/watch?v=... or video_id", "title": "...", "why": "..."}}
+  "youtube_videos": [
+    {{"url_or_id": "https://youtube.com/watch?v=... or 11-char id", "title": "...", "why": "..."}}
   ]
 }}
 Output JSON only."""

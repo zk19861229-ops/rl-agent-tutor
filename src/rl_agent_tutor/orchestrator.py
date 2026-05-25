@@ -71,8 +71,8 @@ def suggest_next_action(plan: LearningPlan) -> str:
     if plan.state == "self_testing":
         return (
             f"You're mid-test on {cur.id} {cur.name}.\n"
-            f"  → resume / retake:  rl-agent test\n"
-            f"  → mark complete:    rl-agent advance"
+            f"  → run a fresh quiz:  rl-agent test\n"
+            f"  → mark complete:     rl-agent advance"
         )
     if plan.state == "advancing":
         return (

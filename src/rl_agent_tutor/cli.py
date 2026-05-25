@@ -561,8 +561,21 @@ def index_cmd():
     from . import indexer
     def progress(name): console.print(f"  · indexing {name}")
     with console.status("[bold]Indexer parsing PDFs...[/bold]"):
-        n_pdfs, n_chunks = indexer.index_papers(progress=progress)
+        n_pdfs, n_chunks, failures = indexer.index_papers(progress=progress)
     console.print(f"[green]✔ Indexed {n_pdfs} PDFs → {n_chunks} chunks[/green]")
+    if failures:
+        console.print(f"[yellow]⚠ {len(failures)} PDF(s) failed to parse:[/yellow]")
+        for fname, err in failures[:10]:
+            console.print(f"  · [red]{fname}[/red]: {err}")
+        # Persist to trajectory so the user can grep progress/ later.
+        p = load_plan()
+        if p and p.current_node_id:
+            summary = "; ".join(f"{f}: {e}" for f, e in failures[:5])
+            append_trajectory(TrajectoryEntry(
+                node_id=p.current_node_id, kind="fetch",
+                content=f"index failures ({len(failures)}): {summary}",
+                meta={"failures": [{"file": f, "error": e} for f, e in failures]},
+            ))
     stats = indexer.index_stats()
     if stats["documents"]:
         console.print("\n[dim]Documents:[/dim]")

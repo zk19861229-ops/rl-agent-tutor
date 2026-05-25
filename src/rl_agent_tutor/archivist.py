@@ -164,6 +164,15 @@ def archive_node(node: LearningNode, stage_name: str = "", use_rag: bool = True)
     notes_dir.mkdir(parents=True, exist_ok=True)
     fname = f"{node.id}_{_slugify(node.name)}.md"
     target = notes_dir / fname
+    # If the node was renamed since the last archive, the old slug-based file
+    # would otherwise stay around as an orphan. Sweep stale `<node.id>_*.md`
+    # entries other than the current target so the KB stays coherent.
+    for stale in notes_dir.glob(f"{node.id}_*.md"):
+        if stale.name != fname and stale.is_file():
+            try:
+                stale.unlink()
+            except OSError:
+                pass
     target.write_text(md, encoding="utf-8")
     return target
 

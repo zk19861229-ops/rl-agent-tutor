@@ -308,8 +308,12 @@ def load_bm25():
 
 def index_papers(papers_dir: Optional[Path] = None,
                  progress=None,
-                 force: bool = False) -> tuple[int, int]:
-    """Reindex PDFs under workspace/library/papers/. Returns (n_pdfs, n_chunks).
+                 force: bool = False) -> tuple[int, int, list[tuple[str, str]]]:
+    """Reindex PDFs under workspace/library/papers/.
+
+    Returns (n_pdfs, n_chunks, failures) where failures is a list of
+    (pdf_filename, error_message) for PDFs that couldn't be parsed. The CLI
+    forwards failures to the trajectory so they're not just swallowed by stdout.
 
     Incremental: PDFs whose mtime hasn't changed since last index reuse cached
     chunks. Pass force=True to rebuild everything.
@@ -327,6 +331,7 @@ def index_papers(papers_dir: Optional[Path] = None,
     new_cache: dict[str, float] = {}
     all_chunks: list[Chunk] = []
     current_doc_ids: set[str] = set()
+    failures: list[tuple[str, str]] = []
 
     for pdf in pdfs:
         doc_id = pdf.stem
@@ -343,7 +348,9 @@ def index_papers(papers_dir: Optional[Path] = None,
         try:
             all_chunks.extend(chunk_pdf(pdf))
         except Exception as e:
-            print(f"[indexer] failed on {pdf.name}: {e}")
+            err = f"{type(e).__name__}: {e}"
+            print(f"[indexer] failed on {pdf.name}: {err}")
+            failures.append((pdf.name, err))
             # keep stale chunks if rechunk failed, so users don't lose hits
             if doc_id in chunks_by_doc:
                 all_chunks.extend(chunks_by_doc[doc_id])
@@ -352,7 +359,7 @@ def index_papers(papers_dir: Optional[Path] = None,
     _save_chunks(all_chunks)
     _build_bm25(all_chunks)
     _save_mtime_cache(new_cache)
-    return len(pdfs), len(all_chunks)
+    return len(pdfs), len(all_chunks), failures
 
 
 def index_stats() -> dict:
