@@ -1,0 +1,46 @@
+# Two containers sharing one workspace volume:
+#   - web:    FastAPI on :8765
+#   - daemon: APScheduler (weekly review / idle nudge / monday focus)
+#
+# Usage:
+#   1. Make sure ../.env exists and contains your API key
+#   2. From the project root:
+#        docker compose -f deploy/docker-compose.yml up -d --build
+#   3. open http://127.0.0.1:8765
+#
+# Logs:
+#   docker compose -f deploy/docker-compose.yml logs -f web
+#   docker compose -f deploy/docker-compose.yml logs -f daemon
+#
+# Stop:
+#   docker compose -f deploy/docker-compose.yml down
+
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: rl-agent-tutor:latest
+    container_name: rl-agent-web
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      WORKSPACE_DIR: /workspace
+    ports:
+      - "127.0.0.1:8765:8765"   # bind only to localhost — change to 0.0.0.0 for LAN
+    volumes:
+      - ../workspace:/workspace
+    command: ["rl-agent", "serve", "--host", "0.0.0.0", "--port", "8765"]
+
+  daemon:
+    image: rl-agent-tutor:latest
+    container_name: rl-agent-daemon
+    restart: unless-stopped
+    depends_on:
+      - web
+    env_file: ../.env
+    environment:
+      WORKSPACE_DIR: /workspace
+    volumes:
+      - ../workspace:/workspace
+    command: ["rl-agent", "daemon", "--idle-days", "3"]

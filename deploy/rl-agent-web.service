@@ -1,0 +1,36 @@
+# RL Agent Tutor — systemd user service for the Web UI.
+#
+# Install:
+#   1. Copy this file to ~/.config/systemd/user/rl-agent-web.service
+#      (also copy rl-agent-daemon.service)
+#   2. Edit the WorkingDirectory and ExecStart paths
+#   3. systemctl --user daemon-reload
+#   4. systemctl --user enable --now rl-agent-web rl-agent-daemon
+#   5. open http://127.0.0.1:8765
+#
+# Status / logs:
+#   systemctl --user status rl-agent-web
+#   journalctl --user -u rl-agent-web -f
+#
+# Stop:
+#   systemctl --user stop rl-agent-web
+#   systemctl --user disable rl-agent-web
+
+[Unit]
+Description=RL Agent Tutor Web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/path/to/rl-agent-tutor
+ExecStart=%h/path/to/rl-agent-tutor/.venv/bin/rl-agent serve --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+
+# Logs go to journald; view via `journalctl --user -u rl-agent-web -f`
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

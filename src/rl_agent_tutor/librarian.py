@@ -1,0 +1,221 @@
+"""Librarian Agent — fetch learning resources for a node from multiple sources.
+
+Pipeline for one node:
+1) Ask LLM for: arxiv queries, GitHub repos, blog URLs, YouTube URLs/IDs
+2) For arxiv:    use `arxiv` lib to search + download top-1 PDF
+3) For GitHub:   `git clone --depth 1` into library/code/
+4) For blogs:    httpx + BeautifulSoup main-text extraction → library/notes/blogs/
+5) For YouTube:  youtube-transcript-api → library/notes/transcripts/
+6) Persist all results to resources.jsonl
+"""
+from __future__ import annotations
+import re
+import shutil
+import subprocess
+from pathlib import Path
+import arxiv
+import httpx
+from .llm import chat_json
+from .models import LearningNode, Resource
+from .config import workspace_path
+from .store import append_resource
+from .fetchers import (
+    fetch_blog, save_blog_md,
+    fetch_youtube_transcript, save_youtube_md, youtube_id,
+)
+
+
+LIBRARIAN_SYSTEM = """You are a research librarian for RL/LLM topics.
+For a given learning node, suggest the best resources to fetch from each source.
+Be specific: actual paper titles, real arxiv search terms, real GitHub repos, real blog URLs, real YouTube video IDs/URLs.
+Only suggest things you are confident exist. If you are not sure, omit it rather than guess.
+"""
+
+LIBRARIAN_USER = """Learning node:
+- ID: {nid}
+- Name: {name}
+- Description: {desc}
+- Objectives: {objs}
+
+Output JSON:
+{{
+  "arxiv_queries": ["<query1>", "<query2>"],   // 2-4 specific arxiv queries (paper titles or "author year topic")
+  "github_repos": ["owner/repo", ...],           // 1-2 high-quality repos
+  "blog_urls": [                                 // 1-3 high-signal blog/article URLs
+    {{"url": "https://...", "why": "<one line>"}}
+  ],
+  "youtube_videos": [                            // 0-2 lecture/talk videos
+    {{"url_or_id": "https://youtube.com/watch?v=... or video_id", "title": "...", "why": "..."}}
+  ]
+}}
+Output JSON only."""
+
+
+def _slugify(s: str, n: int = 60) -> str:
+    s = re.sub(r"[^a-zA-Z0-9._-]+", "_", s).strip("_")
+    return s[:n]
+
+
+# ---------- arxiv ----------
+
+def fetch_arxiv_paper(query: str, node_id: str, papers_dir: Path) -> Resource | None:
+    try:
+        search = arxiv.Search(query=query, max_results=1, sort_by=arxiv.SortCriterion.Relevance)
+        # arxiv >= 2.0 deprecates Search.results() in favor of Client().results(search)
+        try:
+            client = arxiv.Client()
+            results = list(client.results(search))
+        except (AttributeError, TypeError):
+            results = list(search.results())
+    except Exception as e:
+        return Resource(
+            node_id=node_id, kind="paper",
+            title=f"[search failed: {query}]", url=None,
+            summary=f"arxiv search error: {e}",
+        )
+    if not results:
+        return None
+    paper = results[0]
+    arxiv_id = paper.entry_id.rsplit("/", 1)[-1]
+    safe = _slugify(paper.title, 50)
+    fname = f"{arxiv_id}_{safe}.pdf"
+    target = papers_dir / fname
+    if not target.exists():
+        try:
+            # arxiv >= 2.0: download_pdf moved off Result; new API: use httpx fallback
+            if hasattr(paper, "download_pdf"):
+                paper.download_pdf(dirpath=str(papers_dir), filename=fname)
+            else:
+                # manual fallback — fetch pdf_url ourselves
+                pdf_url = getattr(paper, "pdf_url", None) or paper.entry_id.replace("/abs/", "/pdf/")
+                if not pdf_url.endswith(".pdf"):
+                    pdf_url += ".pdf"
+                with httpx.Client(follow_redirects=True, timeout=60.0) as c:
+                    resp = c.get(pdf_url)
+                    resp.raise_for_status()
+                    target.write_bytes(resp.content)
+        except Exception as e:
+            return Resource(
+                node_id=node_id, kind="paper", title=paper.title,
+                url=paper.entry_id, summary=f"download failed: {e}",
+            )
+    return Resource(
+        node_id=node_id, kind="paper",
+        title=paper.title,
+        url=paper.entry_id,
+        local_path=str(target),
+        summary=(paper.summary or "")[:500],
+    )
+
+
+# ---------- github ----------
+
+def clone_github_repo(repo: str, node_id: str, code_dir: Path) -> Resource | None:
+    if "/" not in repo:
+        return None
+    owner, name = repo.split("/", 1)
+    target = code_dir / name
+    if target.exists():
+        return Resource(node_id=node_id, kind="code", title=repo,
+                        url=f"https://github.com/{repo}",
+                        local_path=str(target), summary="(already cloned)")
+    if shutil.which("git") is None:
+        return Resource(node_id=node_id, kind="code", title=repo,
+                        url=f"https://github.com/{repo}",
+                        summary="git not installed; clone manually")
+    url = f"https://github.com/{repo}.git"
+    try:
+        subprocess.run(["git", "clone", "--depth", "1", url, str(target)],
+                       check=True, capture_output=True, timeout=120)
+    except Exception as e:
+        return Resource(node_id=node_id, kind="code", title=repo,
+                        url=f"https://github.com/{repo}",
+                        summary=f"clone failed: {e}")
+    return Resource(node_id=node_id, kind="code", title=repo,
+                    url=f"https://github.com/{repo}", local_path=str(target),
+                    summary="cloned successfully")
+
+
+# ---------- blogs ----------
+
+def fetch_blog_resource(url: str, why: str, node_id: str, blogs_dir: Path) -> Resource | None:
+    blog = fetch_blog(url)
+    if blog.get("error"):
+        return Resource(node_id=node_id, kind="blog", title=url,
+                        url=url, summary=f"fetch failed: {blog['error']}")
+    if not blog.get("text"):
+        return Resource(node_id=node_id, kind="blog", title=blog.get("title", url),
+                        url=url, summary="empty content extracted")
+    target = save_blog_md(blog, blogs_dir, slug_hint=_slugify(blog.get("title", ""), 50))
+    summary = (why + " · " if why else "") + blog["text"][:300].replace("\n", " ")
+    return Resource(node_id=node_id, kind="blog", title=blog.get("title", url),
+                    url=url, local_path=str(target), summary=summary)
+
+
+# ---------- youtube ----------
+
+def fetch_youtube_resource(url_or_id: str, title: str, why: str,
+                           node_id: str, transcripts_dir: Path) -> Resource | None:
+    yt = fetch_youtube_transcript(url_or_id)
+    vid = yt.get("video_id") or youtube_id(url_or_id) or url_or_id
+    canonical_url = f"https://www.youtube.com/watch?v={vid}" if vid else url_or_id
+    if yt.get("error"):
+        return Resource(node_id=node_id, kind="video", title=title or vid,
+                        url=canonical_url, summary=f"transcript unavailable: {yt['error']}")
+    target = save_youtube_md(yt, transcripts_dir, title=title)
+    summary = (why + " · " if why else "") + yt.get("text", "")[:300].replace("\n", " ")
+    return Resource(node_id=node_id, kind="video", title=title or vid,
+                    url=canonical_url, local_path=str(target), summary=summary)
+
+
+# ---------- main entry ----------
+
+def fetch_for_node(node: LearningNode) -> list[Resource]:
+    user = LIBRARIAN_USER.format(
+        nid=node.id, name=node.name, desc=node.description,
+        objs=", ".join(node.objectives) or "(none)",
+    )
+    plan_json = chat_json(LIBRARIAN_SYSTEM, user)
+
+    papers_dir = workspace_path("library", "papers")
+    code_dir = workspace_path("library", "code")
+    blogs_dir = workspace_path("library", "notes", "blogs")
+    transcripts_dir = workspace_path("library", "notes", "transcripts")
+    for d in (papers_dir, code_dir, blogs_dir, transcripts_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    out: list[Resource] = []
+
+    for q in plan_json.get("arxiv_queries", [])[:4]:
+        r = fetch_arxiv_paper(q, node.id, papers_dir)
+        if r:
+            append_resource(r); out.append(r)
+
+    for repo in plan_json.get("github_repos", [])[:2]:
+        r = clone_github_repo(repo, node.id, code_dir)
+        if r:
+            append_resource(r); out.append(r)
+
+    for item in plan_json.get("blog_urls", [])[:3]:
+        url = item.get("url") if isinstance(item, dict) else item
+        why = item.get("why", "") if isinstance(item, dict) else ""
+        if not url:
+            continue
+        r = fetch_blog_resource(url, why, node.id, blogs_dir)
+        if r:
+            append_resource(r); out.append(r)
+
+    for item in plan_json.get("youtube_videos", [])[:2]:
+        if isinstance(item, dict):
+            ref = item.get("url_or_id") or item.get("url") or item.get("id")
+            title = item.get("title", "")
+            why = item.get("why", "")
+        else:
+            ref = item; title = ""; why = ""
+        if not ref:
+            continue
+        r = fetch_youtube_resource(ref, title, why, node.id, transcripts_dir)
+        if r:
+            append_resource(r); out.append(r)
+
+    return out

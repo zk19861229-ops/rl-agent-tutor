@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTD/PropertyList-1.0.dtd">
+<!--
+RL Agent Tutor — Scheduler daemon (weekly review / idle nudge / monday focus).
+Install steps same as web plist.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.rlagent.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- ⚠️ 改路径 -->
+        <string>/Users/YOUR_USERNAME/path/to/rl-agent-tutor/.venv/bin/rl-agent</string>
+        <string>daemon</string>
+        <string>--idle-days</string>
+        <string>3</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/YOUR_USERNAME/path/to/rl-agent-tutor</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/Library/Logs/rl-agent-tutor/daemon.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/Library/Logs/rl-agent-tutor/daemon.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

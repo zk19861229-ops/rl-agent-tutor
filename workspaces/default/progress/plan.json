@@ -1,0 +1,357 @@
+{
+  "goal": "利用RL的技术原理开发自进化的Agent应用",
+  "starting_level": "零基础",
+  "stages": [
+    {
+      "id": 0,
+      "name": "编程基础与环境搭建",
+      "description": "为零基础学习者建立Python编程能力和开发环境，为后续机器学习和强化学习学习奠定技术基础。",
+      "nodes": [
+        {
+          "id": "0.1",
+          "name": "Python基础语法",
+          "description": "掌握Python基本语法、数据结构、函数和面向对象编程",
+          "objectives": [
+            "完成Python基础语法笔记（包含变量、控制流、函数、类）",
+            "独立编写一个简单的学生成绩管理程序"
+          ],
+          "estimated_hours": [
+            20.0,
+            30.0
+          ],
+          "status": "in_progress",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "0.2",
+          "name": "NumPy与数据处理",
+          "description": "学习NumPy数组操作和基础数据处理，为后续机器学习打基础",
+          "objectives": [
+            "完成NumPy常用操作练习代码仓库",
+            "实现矩阵运算和数据分析小项目"
+          ],
+          "estimated_hours": [
+            15.0,
+            20.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "0.3",
+          "name": "开发环境配置",
+          "description": "配置完整的深度学习开发环境，包括conda、PyTorch等",
+          "objectives": [
+            "完成开发环境搭建文档（含CUDA配置）",
+            "成功运行PyTorch官方MNIST示例"
+          ],
+          "estimated_hours": [
+            8.0,
+            12.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "机器学习与深度学习基础",
+      "description": "建立机器学习和深度学习的核心概念理解，为后续强化学习算法学习提供必要的数学和算法基础。",
+      "nodes": [
+        {
+          "id": "1.1",
+          "name": "机器学习核心概念",
+          "description": "理解监督学习、无监督学习、过拟合、梯度下降等核心概念",
+          "objectives": [
+            "完成机器学习基础概念思维导图",
+            "从零实现线性回归和逻辑回归"
+          ],
+          "estimated_hours": [
+            20.0,
+            25.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "1.2",
+          "name": "神经网络基础",
+          "description": "掌握神经网络的前向传播、反向传播、激活函数等原理",
+          "objectives": [
+            "使用PyTorch从零实现一个三层神经网络",
+            "在CIFAR-10数据集上达到60%以上准确率"
+          ],
+          "estimated_hours": [
+            25.0,
+            30.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "1.3",
+          "name": "CNN与RNN基础",
+          "description": "学习卷积神经网络和循环神经网络的核心架构和应用",
+          "objectives": [
+            "实现图像分类CNN模型并完成训练日志",
+            "实现文本生成RNN模型并生成样本"
+          ],
+          "estimated_hours": [
+            20.0,
+            25.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "强化学习核心原理",
+      "description": "系统学习强化学习的基本框架、马尔可夫决策过程、值函数估计和策略优化方法。",
+      "nodes": [
+        {
+          "id": "2.1",
+          "name": "RL基础框架与MDP",
+          "description": "理解Agent-Environment交互框架、马尔可夫决策过程、奖励机制",
+          "objectives": [
+            "完成RL基础理论笔记（包含MDP五元组定义）",
+            "用代码实现GridWorld环境并手动计算最优策略"
+          ],
+          "estimated_hours": [
+            15.0,
+            20.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "2.2",
+          "name": "动态规划方法",
+          "description": "学习策略迭代和值迭代算法，理解最优策略求解",
+          "objectives": [
+            "实现策略迭代算法并可视化收敛过程",
+            "在FrozenLake环境达到80%以上成功率"
+          ],
+          "estimated_hours": [
+            15.0,
+            20.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "2.3",
+          "name": "蒙特卡洛与TD方法",
+          "description": "掌握无模型RL的核心方法：蒙特卡洛方法、TD(0)、Q-Learning、SARSA",
+          "objectives": [
+            "实现Q-Learning算法并训练CartPole智能体",
+            "对比MC方法与TD方法的收敛速度差异报告"
+          ],
+          "estimated_hours": [
+            20.0,
+            25.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "2.4",
+          "name": "深度强化学习算法",
+          "description": "学习DQN及其变体（Double DQN、Dueling DQN）的原理和实现",
+          "objectives": [
+            "实现DQN算法并训练Atari Pong游戏智能体",
+            "完成DQN各变体的消融实验对比报告"
+          ],
+          "estimated_hours": [
+            25.0,
+            30.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "策略梯度与Actor-Critic",
+      "description": "深入学习基于策略的RL方法，理解Policy Gradient、Actor-Critic框架和PPO等主流算法。",
+      "nodes": [
+        {
+          "id": "3.1",
+          "name": "策略梯度方法",
+          "description": "理解REINFORCE算法和策略梯度定理，掌握梯度估计方法",
+          "objectives": [
+            "从数学推导到代码实现REINFORCE算法",
+            "在CartPole环境训练并可视化奖励曲线"
+          ],
+          "estimated_hours": [
+            15.0,
+            20.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "3.2",
+          "name": "Actor-Critic框架",
+          "description": "学习Actor-Critic架构，理解优势函数和GAE估计",
+          "objectives": [
+            "实现A2C算法并完成训练日志分析",
+            "对比Actor-Critic与纯策略梯度方法的样本效率"
+          ],
+          "estimated_hours": [
+            20.0,
+            25.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "3.3",
+          "name": "PPO算法精讲",
+          "description": "深入理解PPO的clip机制和信赖域优化思想",
+          "objectives": [
+            "完整实现PPO算法（含GAE、熵正则化）",
+            "在多个连续控制任务上达到基准性能"
+          ],
+          "estimated_hours": [
+            25.0,
+            30.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "LLM基础与大模型Agent",
+      "description": "学习大语言模型的基本原理、Prompt工程、以及基于LLM的Agent架构设计。",
+      "nodes": [
+        {
+          "id": "4.1",
+          "name": "Transformer与LLM原理",
+          "description": "理解Transformer架构、自注意力机制、GPT/LLaMA等模型原理",
+          "objectives": [
+            "完成Transformer架构详细笔记（含代码实现）",
+            "使用Hugging Face加载并调用开源模型完成对话任务"
+          ],
+          "estimated_hours": [
+            25.0,
+            30.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "4.2",
+          "name": "Prompt工程与工具调用",
+          "description": "掌握有效Prompt设计技巧，理解Function Calling和Tool Use机制",
+          "objectives": [
+            "完成Prompt工程最佳实践文档",
+            "实现带工具调用能力的对话Agent"
+          ],
+          "estimated_hours": [
+            15.0,
+            20.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "4.3",
+          "name": "Agent架构设计",
+          "description": "学习ReAct、Plan-and-Execute等Agent架构，理解记忆和反思机制",
+          "objectives": [
+            "实现ReAct范式的Agent并完成复杂推理任务",
+            "设计并实现带短期/长期记忆的Agent系统"
+          ],
+          "estimated_hours": [
+            20.0,
+            25.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "RL驱动的自进化Agent开发",
+      "description": "整合RL算法与大模型Agent，开发具备自我学习和进化能力的智能体应用。",
+      "nodes": [
+        {
+          "id": "5.1",
+          "name": "RLHF与人类反馈学习",
+          "description": "学习RLHF原理，理解Reward Model训练和PPO微调流程",
+          "objectives": [
+            "完成RLHF技术栈完整笔记",
+            "理解开源RLHF框架（如TRL、veRL）的核心代码"
+          ],
+          "estimated_hours": [
+            20.0,
+            25.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "5.2",
+          "name": "Agent自我优化机制",
+          "description": "设计Agent的自我评估和策略更新机制，实现持续学习",
+          "objectives": [
+            "实现基于自我反馈的Agent性能优化循环",
+            "完成自我优化效果对比实验报告"
+          ],
+          "estimated_hours": [
+            25.0,
+            30.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        },
+        {
+          "id": "5.3",
+          "name": "自进化Agent项目实战",
+          "description": "完成一个完整的自进化Agent应用项目，从设计到部署",
+          "objectives": [
+            "完成自进化Agent项目代码仓库（含README和文档）",
+            "实现可运行的Agent应用并通过功能测试",
+            "撰写项目技术报告和未来改进方向"
+          ],
+          "estimated_hours": [
+            40.0,
+            50.0
+          ],
+          "status": "pending",
+          "notes": "",
+          "completed_at": null
+        }
+      ]
+    }
+  ],
+  "state": "self_testing",
+  "current_node_id": "0.1",
+  "created_at": "2026-05-24T21:10:39.283318",
+  "updated_at": "2026-05-24T21:24:47.675694"
+}

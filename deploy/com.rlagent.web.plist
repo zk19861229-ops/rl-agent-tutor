@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTD/PropertyList-1.0.dtd">
+<!--
+RL Agent Tutor — Web UI launchd job.
+
+Install:
+  1. Edit the WorkingDirectory and ProgramArguments paths below to match YOUR install
+  2. cp deploy/com.rlagent.web.plist ~/Library/LaunchAgents/
+  3. launchctl load -w ~/Library/LaunchAgents/com.rlagent.web.plist
+  4. open http://127.0.0.1:8765
+
+Stop:
+  launchctl unload -w ~/Library/LaunchAgents/com.rlagent.web.plist
+
+Logs:
+  ~/Library/Logs/rl-agent-tutor/web.{out,err}.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.rlagent.web</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- ⚠️ 改成你的 venv 里的 rl-agent 绝对路径 -->
+        <string>/Users/YOUR_USERNAME/path/to/rl-agent-tutor/.venv/bin/rl-agent</string>
+        <string>serve</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8765</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <!-- ⚠️ 改成你的项目根目录 -->
+    <string>/Users/YOUR_USERNAME/path/to/rl-agent-tutor</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/Library/Logs/rl-agent-tutor/web.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/Library/Logs/rl-agent-tutor/web.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

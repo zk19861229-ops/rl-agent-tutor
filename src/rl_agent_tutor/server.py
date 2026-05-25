@@ -1,0 +1,1122 @@
+"""FastAPI Web UI — single-page dashboard.
+
+Endpoints:
+- GET  /              → HTML dashboard
+- GET  /api/plan      → current plan + state
+- POST /api/plan      → create new plan {goal, level}
+- POST /api/ask       → {question} → tutor answer (streams not used in MVP)
+- POST /api/fetch     → fetch resources for current node
+- GET  /api/resources/{node_id}
+- POST /api/test/start → {node_id} returns generated questions
+- POST /api/test/grade → {qid, answer, ...session_id} returns feedback
+- POST /api/advance   → mark current node done, move on
+- POST /api/goto      → {node_id}
+- POST /api/archive   → archive a node (or current)
+- GET  /api/kb/{node_id?} → return KB markdown
+- POST /api/review/weekly → generate weekly review
+- GET  /api/stats     → counts/heatmap data
+
+Run: rl-agent serve [--port 8765]
+"""
+from __future__ import annotations
+import asyncio
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, Body
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from .config import workspace_path, ensure_workspace
+from . import workspaces as ws_mod
+from .store import (
+    save_plan, load_plan, append_trajectory, load_trajectory,
+    load_resources, append_exercise, load_exercises, append_resource,
+)
+from .models import TrajectoryEntry, ExerciseSession, ExerciseAttempt, LearningPlan
+from . import planner, librarian, tutor, examiner, practice, archivist, reviewer, orchestrator, courseware
+from .archivist import _slugify
+from .llm import provider_info
+
+
+app = FastAPI(title="RL Agent Tutor", version="0.3.0")
+
+
+# ---------- Models ----------
+
+class PlanReq(BaseModel):
+    goal: str
+    level: str = ""
+
+
+class AskReq(BaseModel):
+    question: str
+
+
+class GotoReq(BaseModel):
+    node_id: str
+
+
+class TestStartReq(BaseModel):
+    node_id: Optional[str] = None  # default: current
+
+
+class TestGradeReq(BaseModel):
+    node_id: str
+    qid: str
+    question: str
+    expected_points: list[str]
+    qtype: str
+    answer: str
+
+
+# ---------- API ----------
+
+def _plan_or_404() -> LearningPlan:
+    p = load_plan()
+    if not p:
+        raise HTTPException(404, "No plan yet. Create one via POST /api/plan.")
+    return p
+
+
+@app.get("/api/health")
+def health():
+    active = ws_mod.get_active()
+    return {
+        "ok": True,
+        "provider": provider_info(),
+        "workspace": active.name if active else None,
+    }
+
+
+@app.on_event("startup")
+def _on_startup():
+    """Ensure there is at least one workspace and it's active."""
+    try:
+        ws_mod.ensure_default()
+    except Exception as e:
+        print(f"[server] startup workspace setup failed: {e}")
+
+
+# ---------- workspaces ----------
+
+@app.get("/api/workspaces")
+def get_workspaces():
+    return {
+        "active": (ws_mod.get_active().name if ws_mod.get_active() else None),
+        "items": [w.to_dict() for w in ws_mod.list_workspaces()],
+    }
+
+
+class WsCreateReq(BaseModel):
+    name: str
+    switch: bool = True
+
+
+@app.post("/api/workspaces")
+def create_workspace(req: WsCreateReq):
+    try:
+        w = ws_mod.create(req.name, switch=req.switch)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return w.to_dict()
+
+
+class WsSwitchReq(BaseModel):
+    name: str
+
+
+@app.post("/api/workspaces/switch")
+def switch_workspace(req: WsSwitchReq):
+    try:
+        w = ws_mod.switch_to(req.name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return w.to_dict()
+
+
+@app.delete("/api/workspaces/{name}")
+def delete_workspace(name: str, force: bool = False):
+    try:
+        ws_mod.delete(name, force=force)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"deleted": name}
+
+
+@app.get("/api/plan")
+def get_plan():
+    p = load_plan()
+    if not p:
+        return {"plan": None, "provider": provider_info()}
+    return {"plan": p.model_dump(), "provider": provider_info(),
+            "next_action": orchestrator.suggest_next_action(p)}
+
+
+@app.post("/api/plan")
+async def post_plan(req: PlanReq):
+    ensure_workspace()
+    plan = await asyncio.to_thread(planner.make_plan, req.goal, req.level)
+    save_plan(plan)
+    append_trajectory(TrajectoryEntry(kind="plan", content=f"Goal: {req.goal}",
+                                      meta={"level": req.level}))
+    return {"plan": plan.model_dump()}
+
+
+@app.post("/api/goto")
+def post_goto(req: GotoReq):
+    p = _plan_or_404()
+    n = p.find_node(req.node_id)
+    if not n:
+        raise HTTPException(404, f"node {req.node_id} not found")
+    p.current_node_id = n.id
+    if n.status == "pending":
+        n.status = "in_progress"
+    p.state = "studying"
+    save_plan(p)
+    return {"plan": p.model_dump()}
+
+
+@app.post("/api/ask")
+async def post_ask(req: AskReq):
+    p = _plan_or_404()
+    if not p.current_node_id:
+        raise HTTPException(400, "no current node")
+    n = p.find_node(p.current_node_id)
+    s = p.stage_of(n.id)
+    append_trajectory(TrajectoryEntry(node_id=n.id, kind="ask", content=req.question))
+    ans, citations = await asyncio.to_thread(tutor.ask, n, s.name if s else "", req.question)
+    append_trajectory(TrajectoryEntry(node_id=n.id, kind="answer", content=ans,
+                                      meta={"citations": citations}))
+    return {"answer": ans, "citations": citations}
+
+
+class IndexReq(BaseModel):
+    pass
+
+
+@app.post("/api/index")
+async def post_index():
+    from . import indexer
+    n_pdfs, n_chunks = await asyncio.to_thread(indexer.index_papers)
+    return {"n_pdfs": n_pdfs, "n_chunks": n_chunks, "stats": indexer.index_stats()}
+
+
+@app.get("/api/index/stats")
+def get_index_stats():
+    from . import indexer
+    return indexer.index_stats()
+
+
+class QueryReq(BaseModel):
+    query: str
+    top_n: int = 5
+    rerank: bool = True
+
+
+@app.post("/api/query")
+async def post_query(req: QueryReq):
+    from . import rag
+    hits = await asyncio.to_thread(rag.retrieve, req.query, top_n=req.top_n, rerank=req.rerank)
+    return {
+        "hits": [
+            {
+                "chunk_id": h.chunk.chunk_id, "doc_id": h.chunk.doc_id,
+                "title": h.chunk.title, "section": h.chunk.section,
+                "page": h.chunk.page, "score": round(h.score, 3),
+                "preview": h.chunk.text[:600],
+            }
+            for h in hits
+        ]
+    }
+
+
+@app.post("/api/fetch")
+async def post_fetch():
+    p = _plan_or_404()
+    if not p.current_node_id:
+        raise HTTPException(400, "no current node")
+    n = p.find_node(p.current_node_id)
+    rs = await asyncio.to_thread(librarian.fetch_for_node, n)
+    append_trajectory(TrajectoryEntry(node_id=n.id, kind="fetch",
+                                      content=f"fetched {len(rs)} resources"))
+    return {"resources": [r.model_dump() for r in rs]}
+
+
+@app.get("/api/resources/{node_id}")
+def get_resources(node_id: str):
+    return {"resources": [r.model_dump() for r in load_resources(node_id=node_id)]}
+
+
+@app.post("/api/practices")
+async def post_practices():
+    p = _plan_or_404()
+    n = p.find_node(p.current_node_id)
+    if not n:
+        raise HTTPException(400, "no current node")
+    text = await asyncio.to_thread(practice.best_practices, n)
+    append_trajectory(TrajectoryEntry(node_id=n.id, kind="study",
+                                      content=f"viewed practices: {n.name}"))
+    return {"text": text}
+
+
+@app.post("/api/courseware")
+async def post_courseware(force: bool = False):
+    """Generate (or load cached) courseware for the current node from fetched resources."""
+    p = _plan_or_404()
+    n = p.find_node(p.current_node_id)
+    if not n:
+        raise HTTPException(400, "no current node")
+    s = p.stage_of(n.id)
+    if not force:
+        cached = courseware.load_courseware(n)
+        if cached:
+            return cached
+    result = await asyncio.to_thread(courseware.generate_courseware, n, s.name if s else "")
+    append_trajectory(TrajectoryEntry(
+        node_id=n.id, kind="study",
+        content=f"generated courseware: {n.name}",
+        meta={"sources_used": result.get("sources_used")},
+    ))
+    return result
+
+
+@app.get("/api/courseware/{node_id}")
+def get_courseware(node_id: str):
+    p = _plan_or_404()
+    n = p.find_node(node_id)
+    if not n:
+        raise HTTPException(404, f"node {node_id} not found")
+    cached = courseware.load_courseware(n)
+    if not cached:
+        return {"node_id": node_id, "markdown": "", "cached": False}
+    return cached
+
+
+@app.post("/api/test/start")
+async def post_test_start(req: TestStartReq):
+    p = _plan_or_404()
+    nid = req.node_id or p.current_node_id
+    n = p.find_node(nid)
+    if not n:
+        raise HTTPException(404, f"node {nid} not found")
+    qs = await asyncio.to_thread(examiner.generate_exercises, n)
+    p.state = "self_testing"
+    save_plan(p)
+    return {"node_id": n.id, "questions": [q.model_dump() for q in qs]}
+
+
+@app.post("/api/test/grade")
+async def post_test_grade(req: TestGradeReq):
+    from .models import ExerciseQuestion
+    q = ExerciseQuestion(qid=req.qid, type=req.qtype, question=req.question,
+                         expected_points=req.expected_points)
+    attempt = await asyncio.to_thread(examiner.grade_answer, q, req.answer)
+    return attempt.model_dump()
+
+
+class TestSubmitReq(BaseModel):
+    node_id: str
+    questions: list[dict]
+    attempts: list[dict]
+
+
+@app.post("/api/test/submit")
+def post_test_submit(req: TestSubmitReq):
+    """Persist the entire session at the end."""
+    from .models import ExerciseQuestion
+    sess = ExerciseSession(
+        node_id=req.node_id,
+        questions=[ExerciseQuestion(**q) for q in req.questions],
+        attempts=[ExerciseAttempt(**a) for a in req.attempts],
+        finished_at=datetime.now().isoformat(),
+    )
+    avg, summary = examiner.summarize_session(sess.attempts)
+    sess.overall_score = avg
+    append_exercise(sess)
+    append_trajectory(TrajectoryEntry(node_id=req.node_id, kind="test",
+                                      content=summary, meta={"score": avg}))
+    p = _plan_or_404()
+    p.state = "advancing" if avg >= 0.8 else "studying"
+    save_plan(p)
+    return {"overall_score": avg, "summary": summary, "state": p.state}
+
+
+@app.post("/api/advance")
+def post_advance():
+    p = _plan_or_404()
+    if not p.current_node_id:
+        raise HTTPException(400, "no current node")
+    cur = p.current_node_id
+    orchestrator.mark_node_completed(p, cur)
+    new_id = orchestrator.advance_to_next(p)
+    append_trajectory(TrajectoryEntry(node_id=cur, kind="advance",
+                                      content=f"completed; next={new_id}"))
+    return {"completed": cur, "next": new_id, "plan": p.model_dump()}
+
+
+class ArchiveReq(BaseModel):
+    node_id: Optional[str] = None
+    all_completed: bool = False
+    all_active: bool = False
+
+
+@app.post("/api/archive")
+async def post_archive(req: ArchiveReq):
+    p = _plan_or_404()
+    if req.all_completed:
+        targets = await asyncio.to_thread(archivist.archive_all, p, True)
+    elif req.all_active:
+        targets = await asyncio.to_thread(archivist.archive_all, p, False)
+    else:
+        nid = req.node_id or p.current_node_id
+        n = p.find_node(nid)
+        if not n:
+            raise HTTPException(404, f"node {nid} not found")
+        s = p.stage_of(n.id)
+        target = await asyncio.to_thread(archivist.archive_node, n, s.name if s else "")
+        targets = [target]
+    idx = await asyncio.to_thread(archivist.build_index, p)
+    return {"files": [str(t) for t in targets], "index": str(idx)}
+
+
+@app.get("/api/kb")
+def get_kb_index():
+    p = _plan_or_404()
+    idx = workspace_path("library", "notes", "INDEX.md")
+    if not idx.exists():
+        return {"markdown": "(no KB yet — run archive first)"}
+    return {"markdown": idx.read_text(encoding="utf-8")}
+
+
+@app.get("/api/kb/{node_id}")
+def get_kb_node(node_id: str):
+    p = _plan_or_404()
+    n = p.find_node(node_id)
+    if not n:
+        raise HTTPException(404, f"node {node_id} not found")
+    target = workspace_path("library", "notes", f"{n.id}_{_slugify(n.name)}.md")
+    if not target.exists():
+        return {"markdown": f"(no KB entry for {node_id} yet — POST /api/archive first)"}
+    return {"markdown": target.read_text(encoding="utf-8")}
+
+
+@app.post("/api/review/weekly")
+async def post_weekly_review():
+    p = _plan_or_404()
+    target = await asyncio.to_thread(reviewer.weekly_review, p)
+    return {"file": str(target), "markdown": target.read_text(encoding="utf-8")}
+
+
+@app.get("/api/trajectory")
+def get_trajectory(node_id: Optional[str] = None, limit: int = 50):
+    return {"entries": [e.model_dump() for e in load_trajectory(node_id=node_id, limit=limit)]}
+
+
+@app.get("/api/stats")
+def get_stats():
+    p = load_plan()
+    if not p:
+        return {"empty": True}
+    nodes = p.all_nodes()
+    done = sum(1 for n in nodes if n.status == "completed")
+    # heatmap: hours per day for last 53 weeks (we only track logs as trajectory)
+    all_traj = load_trajectory(limit=100000)
+    by_day: dict[str, int] = {}
+    for e in all_traj:
+        d = e.ts[:10]
+        by_day[d] = by_day.get(d, 0) + 1
+    # streak
+    from datetime import date as _date
+    today = _date.today()
+    streak = 0
+    for i in range(0, 365):
+        d = (today - timedelta(days=i)).isoformat()
+        if by_day.get(d, 0) > 0:
+            streak += 1
+        elif i > 0:
+            break
+    # exercise scores trend
+    exes = load_exercises()
+    scores = [{"date": s.started_at[:10], "node": s.node_id,
+               "score": s.overall_score} for s in exes if s.overall_score is not None]
+    return {
+        "total_nodes": len(nodes), "done_nodes": done,
+        "by_day": by_day, "streak": streak, "scores": scores,
+        "current_node_id": p.current_node_id, "state": p.state,
+        "provider": provider_info(),
+    }
+
+
+# ---------- Web UI ----------
+
+INDEX_HTML = r"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>RL Agent Tutor</title>
+<style>
+:root { color-scheme: light; --pri:#1f6feb; --bg:#f6f7f9; --card:#fff; --bd:#e3e5e8; --txt:#1f2328; --mut:#6a737d; --ok:#1a7f37; --warn:#d97706; --danger:#cf222e; --focus:#fa8c16; }
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;background:var(--bg);color:var(--txt);font-size:14px;line-height:1.6}
+.app{max-width:1180px;margin:0 auto;padding:18px 16px 60px}
+header{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--bd)}
+h1{font-size:18px;font-weight:700}
+.sub{font-size:12px;color:var(--mut)}
+.btn{background:var(--card);border:1px solid var(--bd);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;color:var(--txt)}
+.btn:hover{background:#f0f3f6}
+.btn.primary{background:var(--pri);color:#fff;border-color:var(--pri)}
+.btn.primary:hover{background:#1858c4}
+.btn.danger:hover{background:#fdf2f2;border-color:var(--danger);color:var(--danger)}
+.btn[disabled]{opacity:.5;cursor:not-allowed}
+.tabs{display:flex;gap:2px;background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:4px;margin-bottom:14px;overflow-x:auto}
+.tab{padding:7px 14px;cursor:pointer;border-radius:6px;font-size:13px;color:var(--mut);white-space:nowrap}
+.tab.active{background:var(--pri);color:#fff}
+.view{display:none}.view.active{display:block}
+.row{display:grid;grid-template-columns:280px 1fr;gap:14px}
+@media (max-width:880px){.row{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+.card h3{font-size:13px;font-weight:600;color:var(--mut);margin-bottom:8px}
+.stage{margin-bottom:10px}
+.stage-name{font-weight:600;font-size:13px;margin-bottom:4px;display:flex;justify-content:space-between}
+.stage-name .pct{font-size:11px;color:var(--mut)}
+.node{padding:5px 8px;border-radius:5px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px}
+.node:hover{background:#f0f3f6}
+.node.cur{background:#ddf4ff;color:#0969da;font-weight:600}
+.node .id{font-family:ui-monospace,monospace;color:var(--mut);font-size:11px}
+.node .icon{width:14px;text-align:center}
+.empty{padding:30px;text-align:center;color:var(--mut)}
+.toolbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+textarea,input{width:100%;padding:8px 10px;border:1px solid var(--bd);border-radius:6px;font:inherit;font-size:13px}
+textarea{resize:vertical;font-family:inherit}
+.qa-msg{padding:10px 12px;border-radius:6px;margin:8px 0;font-size:13px;line-height:1.7;white-space:pre-wrap}
+.qa-msg.user{background:#ddf4ff;color:#0969da}
+.qa-msg.ai{background:#fafbfc;border:1px solid var(--bd)}
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid #ddd;border-top-color:var(--pri);border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+.kb pre{background:#1f2328;color:#f0f3f6;padding:10px;border-radius:5px;overflow-x:auto;font-size:12px}
+.kb pre code{background:transparent;color:inherit;padding:0;font-size:inherit}
+.kb code{background:#eef0f2;color:#1f2328;padding:1px 5px;border-radius:3px;font-size:12px}
+.kb h1{font-size:18px;margin:14px 0 8px}.kb h2{font-size:15px;margin:12px 0 6px;border-bottom:1px solid var(--bd);padding-bottom:4px}.kb h3{font-size:13px;margin:8px 0 4px}.kb h4{font-size:12px;margin:6px 0 4px}.kb ul,.kb ol{padding-left:22px;margin:4px 0}.kb li{margin:2px 0}.kb a{color:var(--pri)}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:12px}
+.stat-card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:12px}
+.stat-label{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px}
+.stat-value{font-size:22px;font-weight:700;margin-top:4px}
+.heat{display:grid;grid-template-columns:repeat(53,11px);gap:2px;padding:4px 0;overflow-x:auto}
+.hc{width:11px;height:11px;border-radius:2px;background:#ebedf0}
+.hc.l1{background:#9be9a8}.hc.l2{background:#40c463}.hc.l3{background:#30a14e}.hc.l4{background:#216e39}
+.test-q{padding:14px;background:var(--card);border:1px solid var(--bd);border-radius:8px;margin-bottom:10px}
+.test-q .qhead{font-weight:600;margin-bottom:8px}
+.test-q .qtype{font-size:10px;background:#f0f3f6;padding:2px 6px;border-radius:3px;margin-right:6px}
+.feedback{margin-top:10px;padding:10px 12px;border-radius:6px;font-size:12px}
+.feedback.ok{background:#dafbe1;color:#1a7f37}
+.feedback.warn{background:#fff8c5;color:#5d4e00}
+.feedback.bad{background:#ffebe9;color:var(--danger)}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(80px);background:#1f2328;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;opacity:0;transition:all .3s;z-index:99}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.res{padding:8px 0;border-bottom:1px dashed var(--bd);font-size:12px}
+.res:last-child{border-bottom:none}
+.res .kind{font-size:10px;background:var(--pri);color:#fff;padding:1px 6px;border-radius:3px;margin-right:6px}
+.res .title{font-weight:500}
+.res .meta{color:var(--mut);font-size:11px;margin-top:2px}
+.dot-state{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mut);margin-right:6px}
+.dot-state.studying{background:var(--pri)}.dot-state.self_testing{background:#a371f7}.dot-state.advancing{background:var(--ok)}.dot-state.done{background:var(--ok)}
+</style>
+</head>
+<body>
+<div class="app">
+
+<header>
+  <div>
+    <h1>RL Agent Tutor</h1>
+    <div class="sub" id="metaLine">Loading…</div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <select id="wsSelect" onchange="onWsChange()" title="当前学习工作区"
+            style="padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--card);font-size:12px"></select>
+    <button class="btn" onclick="openNewWs()" title="新建一个独立的学习任务">+ 新任务</button>
+    <button class="btn" onclick="refreshAll()">🔄 刷新</button>
+  </div>
+</header>
+
+<div class="modal-bg" id="newWsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:99;align-items:center;justify-content:center">
+  <div class="card" style="max-width:420px;width:90%;margin:0">
+    <h3 style="margin-bottom:8px">新建学习任务</h3>
+    <div class="sub" style="margin-bottom:10px">每个任务有独立的计划、问答、知识库、归档。互不干扰。</div>
+    <input id="newWsName" placeholder="任务标识(英文小写,如 rust-async, system-design)" style="margin-bottom:8px"/>
+    <div class="sub" style="font-size:11px;margin-bottom:8px">只允许 a-z、0-9、_、-,最多 40 字符</div>
+    <div style="display:flex;gap:6px;justify-content:flex-end">
+      <button class="btn" onclick="closeNewWs()">取消</button>
+      <button class="btn primary" onclick="confirmNewWs()">创建并切换</button>
+    </div>
+  </div>
+</div>
+
+<div id="noPlan" style="display:none">
+  <div class="card">
+    <h3>开始一个学习计划</h3>
+    <input id="goal" placeholder="学习目标,如:掌握 PPO 并能用 TRL 跑通 RLHF" style="margin-bottom:8px"/>
+    <input id="level" placeholder="当前水平(可选)"/>
+    <div style="margin-top:10px"><button class="btn primary" onclick="createPlan()">生成计划</button></div>
+  </div>
+</div>
+
+<div id="hasPlan" style="display:none">
+  <div class="tabs">
+    <div class="tab active" data-v="study">学习</div>
+    <div class="tab" data-v="resources">资源</div>
+    <div class="tab" data-v="kb">知识库</div>
+    <div class="tab" data-v="test">自测</div>
+    <div class="tab" data-v="dashboard">看板</div>
+    <div class="tab" data-v="review">复盘</div>
+    <div class="tab" data-v="library">📚 RAG</div>
+  </div>
+
+  <div id="v-study" class="view active">
+    <div class="row">
+      <div>
+        <div class="card">
+          <h3>学习路径</h3>
+          <div id="planTree"></div>
+        </div>
+        <div class="card">
+          <h3>下一步建议</h3>
+          <div id="nextAction" class="sub" style="white-space:pre-wrap"></div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h3 id="curHead">当前节点</h3>
+          <div id="curBody"></div>
+          <div class="toolbar" style="margin-top:10px">
+            <button class="btn primary" onclick="doFetch()">📚 抓资源</button>
+            <button class="btn" onclick="doCourseware()">📖 生成课件</button>
+            <button class="btn" onclick="doPractices()">⭐ 行业实践</button>
+            <button class="btn" onclick="setView('test');startTest()">🧪 开始自测</button>
+            <button class="btn" onclick="doArchive()">📝 归档为KB</button>
+            <button class="btn" onclick="doAdvance()">➡️ 完成并推进</button>
+          </div>
+        </div>
+        <div class="card" id="inlineResourcesCard" style="display:none">
+          <h3 style="display:flex;justify-content:space-between;align-items:center">
+            <span>📚 本节点资源 <span id="inlineResourcesCount" class="sub" style="font-weight:normal;font-size:12px"></span></span>
+            <span style="display:flex;gap:10px;align-items:center;font-weight:normal;font-size:12px">
+              <span style="cursor:pointer;color:var(--mut)" onclick="doFetch()" title="重新抓取资源">🔄 重新抓取</span>
+              <span style="cursor:pointer;color:var(--mut)" onclick="document.getElementById('inlineResourcesCard').style.display='none'">收起 ✕</span>
+            </span>
+          </h3>
+          <div id="inlineResourcesList"></div>
+        </div>
+        <div class="card" id="inlineResCard" style="display:none">
+          <h3 style="display:flex;justify-content:space-between;align-items:center">
+            <span>📖 学习课件 <span id="inlineResCount" class="sub" style="font-weight:normal;font-size:12px"></span></span>
+            <span style="display:flex;gap:10px;align-items:center;font-weight:normal;font-size:12px">
+              <span style="cursor:pointer;color:var(--mut)" onclick="regenCourseware()" title="基于当前已抓资源重新生成">🔄 重新生成</span>
+              <span style="cursor:pointer;color:var(--mut)" onclick="document.getElementById('inlineResCard').style.display='none'">收起 ✕</span>
+            </span>
+          </h3>
+          <div id="inlineResList" class="kb"></div>
+        </div>
+        <div class="card" id="practiceCard" style="display:none">
+          <h3 style="display:flex;justify-content:space-between;align-items:center">
+            <span>⭐ 行业实践</span>
+            <span style="cursor:pointer;color:var(--mut);font-weight:normal;font-size:12px" onclick="document.getElementById('practiceCard').style.display='none'">收起 ✕</span>
+          </h3>
+          <div id="practiceContent" class="kb"></div>
+        </div>
+        <div class="card">
+          <h3>问 Tutor</h3>
+          <div id="qaHistory"></div>
+          <textarea id="qaInput" rows="3" placeholder="向 tutor 提问,自动带节点上下文"></textarea>
+          <div style="margin-top:8px"><button class="btn primary" onclick="doAsk()" id="askBtn">提问</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="v-resources" class="view">
+    <div class="card">
+      <h3>当前节点资源</h3>
+      <div class="toolbar"><button class="btn primary" onclick="doFetch()">🔄 重新抓取</button></div>
+      <div id="resList"></div>
+    </div>
+  </div>
+
+  <div id="v-kb" class="view">
+    <div class="card">
+      <h3>知识库</h3>
+      <div class="toolbar">
+        <button class="btn" onclick="loadKbIndex()">总览索引</button>
+        <button class="btn" onclick="loadKbNode()">当前节点</button>
+        <button class="btn primary" onclick="doArchive()">📝 归档当前节点</button>
+        <button class="btn" onclick="doArchiveAll()">📝 归档所有有活动的节点</button>
+      </div>
+      <div id="kbContent" class="kb"></div>
+    </div>
+  </div>
+
+  <div id="v-test" class="view">
+    <div class="card">
+      <h3>自测</h3>
+      <div class="toolbar">
+        <button class="btn primary" onclick="startTest()">🎯 出 5 题</button>
+      </div>
+      <div id="testArea"></div>
+    </div>
+  </div>
+
+  <div id="v-dashboard" class="view">
+    <div class="stat-grid" id="statGrid"></div>
+    <div class="card"><h3>近 53 周活动热力</h3><div class="heat" id="heatmap"></div></div>
+    <div class="card"><h3>近期自测分</h3><div id="scoresList"></div></div>
+  </div>
+
+  <div id="v-review" class="view">
+    <div class="card">
+      <h3>复盘</h3>
+      <div class="toolbar"><button class="btn primary" onclick="genWeekly()">📅 生成周复盘</button></div>
+      <div id="reviewContent" class="kb"></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let state={plan:null,stats:null,test:null};
+
+async function api(method,path,body){
+  const opt={method,headers:{'Content-Type':'application/json'}};
+  if(body) opt.body=JSON.stringify(body);
+  const r=await fetch(path,opt);
+  if(!r.ok){const t=await r.text();throw new Error(t)}
+  return await r.json();
+}
+function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800)}
+function escapeHtml(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function md2html(md){
+  let h=escapeHtml(md);
+  h=h.replace(/```(\w*)\n([\s\S]*?)```/g,(m,l,c)=>`<pre><code>${c}</code></pre>`);
+  h=h.replace(/`([^`\n]+)`/g,'<code>$1</code>');
+  h=h.replace(/^####\s+(.+)$/gm,'<h4>$1</h4>');
+  h=h.replace(/^###\s+(.+)$/gm,'<h3>$1</h3>');
+  h=h.replace(/^##\s+(.+)$/gm,'<h2>$1</h2>');
+  h=h.replace(/^#\s+(.+)$/gm,'<h1>$1</h1>');
+  h=h.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  h=h.replace(/\*([^*]+)\*/g,'<em>$1</em>');
+  h=h.replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+  h=h.replace(/^[-*]\s+(.+)$/gm,'<li>$1</li>');
+  h=h.replace(/(<li>[\s\S]*?<\/li>(\n|$))+/g,m=>'<ul>'+m+'</ul>');
+  h=h.replace(/\n{2,}/g,'</p><p>');h='<p>'+h+'</p>';
+  h=h.replace(/<p>(<h\d|<ul|<pre)/g,'$1').replace(/(<\/h\d>|<\/ul>|<\/pre>)<\/p>/g,'$1');
+  return h;
+}
+function setView(v){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.v===v));
+  document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id==='v-'+v));
+  if(v==='resources') loadResources();
+  if(v==='kb') loadKbNode();
+  if(v==='dashboard') loadStats();
+  if(v==='library') loadIndexStats();
+}
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>setView(t.dataset.v));
+
+async function refreshAll(){
+  await refreshWorkspaces();
+  const r=await api('GET','/api/plan');
+  state.plan=r.plan;
+  const ws=document.getElementById('wsSelect').value || '';
+  document.getElementById('metaLine').textContent=(r.provider||'')+' · ws: '+ws+' · '+(r.plan?(r.plan.state||'idle'):'no plan');
+  if(!r.plan){
+    document.getElementById('noPlan').style.display='block';
+    document.getElementById('hasPlan').style.display='none';
+  }else{
+    document.getElementById('noPlan').style.display='none';
+    document.getElementById('hasPlan').style.display='block';
+    renderPlan(r.plan);
+    document.getElementById('nextAction').textContent=r.next_action||'';
+    renderCurrent();
+    renderQAHistory();
+  }
+}
+
+async function refreshWorkspaces(){
+  try{
+    const r=await api('GET','/api/workspaces');
+    const sel=document.getElementById('wsSelect');
+    sel.innerHTML=r.items.map(w=>{
+      const prog=w.progress[1]?` (${w.progress[0]}/${w.progress[1]})`:'';
+      return `<option value="${w.name}" ${w.active?'selected':''}>${w.name}${prog}</option>`;
+    }).join('');
+  }catch(e){console.error('workspaces fetch',e)}
+}
+
+async function onWsChange(){
+  const name=document.getElementById('wsSelect').value;
+  try{
+    await api('POST','/api/workspaces/switch',{name});
+    toast('切换到 '+name);
+    // clear transient UI bits so they don't bleed across workspaces
+    const pc=document.getElementById('practiceCard');
+    if(pc){pc.style.display='none';document.getElementById('practiceContent').innerHTML=''}
+    const qh=document.getElementById('qaHistory');if(qh) qh.innerHTML='';
+    const kb=document.getElementById('kbContent');if(kb) kb.innerHTML='';
+    const rl=document.getElementById('resList');if(rl) rl.innerHTML='';
+    const rv=document.getElementById('reviewContent');if(rv) rv.innerHTML='';
+    state.test=null;
+    await refreshAll();
+  }catch(e){alert('切换失败: '+e.message)}
+}
+
+function openNewWs(){
+  document.getElementById('newWsModal').style.display='flex';
+  document.getElementById('newWsName').value='';
+  setTimeout(()=>document.getElementById('newWsName').focus(),50);
+}
+function closeNewWs(){document.getElementById('newWsModal').style.display='none'}
+async function confirmNewWs(){
+  const name=document.getElementById('newWsName').value.trim().toLowerCase();
+  if(!name){toast('请填写任务名');return}
+  try{
+    await api('POST','/api/workspaces',{name,switch:true});
+    closeNewWs();
+    toast('已创建 '+name);
+    state.test=null;
+    await refreshAll();
+  }catch(e){alert('创建失败: '+e.message)}
+}
+
+function renderPlan(p){
+  const root=document.getElementById('planTree');
+  root.innerHTML=p.stages.map(s=>{
+    const done=s.nodes.filter(n=>n.status==='completed').length;
+    return `<div class="stage">
+      <div class="stage-name">Stage ${s.id} · ${escapeHtml(s.name)}<span class="pct">${done}/${s.nodes.length}</span></div>
+      ${s.nodes.map(n=>{
+        const icon={completed:'✅',in_progress:'🔄',self_testing:'🧪',pending:'⬜'}[n.status]||'•';
+        const cur=n.id===p.current_node_id?'cur':'';
+        return `<div class="node ${cur}" onclick="goTo('${n.id}')"><span class="icon">${icon}</span><span class="id">${n.id}</span> ${escapeHtml(n.name)}</div>`;
+      }).join('')}
+    </div>`;
+  }).join('');
+}
+
+function curNode(){
+  if(!state.plan||!state.plan.current_node_id) return null;
+  return state.plan.stages.flatMap(s=>s.nodes).find(n=>n.id===state.plan.current_node_id);
+}
+
+function renderCurrent(){
+  const n=curNode();const el=document.getElementById('curBody');
+  if(!n){el.innerHTML='<div class="empty">无当前节点</div>';return}
+  document.getElementById('curHead').innerHTML=`<span class="dot-state ${state.plan.state||''}"></span>当前节点 · ${n.id} ${escapeHtml(n.name)}`;
+  el.innerHTML=`
+    <div style="font-size:12px;color:var(--mut)">${escapeHtml(n.description||'')}</div>
+    ${n.objectives&&n.objectives.length?`<div style="margin-top:8px"><strong>目标:</strong><ul>${n.objectives.map(o=>'<li>'+escapeHtml(o)+'</li>').join('')}</ul></div>`:''}
+    <div style="margin-top:6px;font-size:11px;color:var(--mut)">预估 ${n.estimated_hours[0]}–${n.estimated_hours[1]}h · 状态: ${n.status}</div>
+  `;
+}
+
+async function goTo(nid){
+  await api('POST','/api/goto',{node_id:nid});
+  const pcard=document.getElementById('practiceCard');
+  if(pcard){pcard.style.display='none';document.getElementById('practiceContent').innerHTML=''}
+  const rcard=document.getElementById('inlineResCard');
+  if(rcard){rcard.style.display='none';document.getElementById('inlineResList').innerHTML='';document.getElementById('inlineResCount').textContent=''}
+  const rescard=document.getElementById('inlineResourcesCard');
+  if(rescard){rescard.style.display='none';document.getElementById('inlineResourcesList').innerHTML='';document.getElementById('inlineResourcesCount').textContent=''}
+  await refreshAll();
+}
+
+async function createPlan(){
+  const goal=document.getElementById('goal').value.trim();
+  if(!goal){toast('请填写学习目标');return}
+  const level=document.getElementById('level').value.trim();
+  toast('生成中,通常 20–40 秒...');
+  try{await api('POST','/api/plan',{goal,level});await refreshAll();toast('计划已生成')}catch(e){alert('失败: '+e.message)}
+}
+
+async function doAsk(){
+  const q=document.getElementById('qaInput').value.trim();if(!q)return;
+  const btn=document.getElementById('askBtn');btn.disabled=true;btn.textContent='思考中...';
+  pushMsg('user',q);document.getElementById('qaInput').value='';
+  try{
+    const r=await api('POST','/api/ask',{question:q});
+    pushMsg('ai',r.answer);
+    if(r.citations&&r.citations.length){pushCitations(r.citations)}
+  }
+  catch(e){pushMsg('ai','⚠️ 失败: '+e.message)}
+  btn.disabled=false;btn.textContent='提问';
+}
+function pushCitations(cits){
+  const box=document.getElementById('qaHistory');
+  const div=document.createElement('div');
+  div.style.cssText='margin:-4px 0 8px 0;padding:6px 10px;background:#f6f8fa;border-left:3px solid var(--pri);border-radius:4px;font-size:11px;color:var(--mut)';
+  div.innerHTML='📚 引用来源:<br>'+cits.map(c=>`<span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 6px;background:#fff;border:1px solid var(--bd);border-radius:3px;font-family:ui-monospace,monospace">[${escapeHtml(c.doc_id)} · §${escapeHtml(c.section)} · p.${c.page}]</span>`).join('');
+  box.appendChild(div);box.scrollTop=box.scrollHeight;
+}
+function pushMsg(role,text){
+  const box=document.getElementById('qaHistory');
+  const div=document.createElement('div');div.className='qa-msg '+role;
+  div.innerHTML=role==='ai'?md2html(text):escapeHtml(text);
+  box.appendChild(div);box.scrollTop=box.scrollHeight;
+}
+async function renderQAHistory(){
+  const n=curNode();if(!n)return;
+  const r=await api('GET','/api/trajectory?node_id='+n.id+'&limit=20');
+  const box=document.getElementById('qaHistory');box.innerHTML='';
+  for(const e of r.entries){
+    if(e.kind==='ask') pushMsg('user',e.content);
+    else if(e.kind==='answer') pushMsg('ai',e.content);
+  }
+}
+async function doFetch(){
+  toast('抓取中,可能要 30–60 秒(arxiv + git clone + 博客)...');
+  const btns=document.querySelectorAll('[onclick*="doFetch"]');
+  btns.forEach(b=>{b.disabled=true});
+  try{
+    const r=await api('POST','/api/fetch');
+    const items=r.resources||[];
+    const byKind={};
+    for(const x of items){byKind[x.kind]=(byKind[x.kind]||0)+1}
+    const summary=Object.entries(byKind).map(([k,v])=>`${k}:${v}`).join(' · ')||'(空)';
+    toast(`已抓 ${items.length} 项 (${summary})`);
+    renderResourceList(items);                 // dedicated 资源 tab
+    showInlineResources(items, summary);       // 学习页就近显示
+  }catch(e){alert('抓取失败: '+e.message)}
+  finally{btns.forEach(b=>{b.disabled=false})}
+}
+
+function showInlineResources(items, summary){
+  const card=document.getElementById('inlineResourcesCard');
+  const list=document.getElementById('inlineResourcesList');
+  const cnt=document.getElementById('inlineResourcesCount');
+  if(!card) return;
+  cnt.textContent=items&&items.length?`(${items.length} 项 · ${summary||''})`:'';
+  renderResourceListInto(list, items);
+  card.style.display='block';
+  card.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+async function doCourseware(){
+  await loadCoursewareInline({force:false});
+}
+
+async function loadCoursewareInline({force=false}={}){
+  const card=document.getElementById('inlineResCard');
+  const body=document.getElementById('inlineResList');
+  const cnt=document.getElementById('inlineResCount');
+  if(!card) return;
+  card.style.display='block';
+  card.scrollIntoView({behavior:'smooth',block:'nearest'});
+  cnt.textContent=force?'(重新综合中…)':'(综合中…)';
+  body.innerHTML='<div class="empty"><span class="spinner"></span> AI 正在阅读资源并提炼课件,通常 20–40 秒...</div>';
+  try{
+    const url='/api/courseware'+(force?'?force=true':'');
+    const r=await api('POST',url);
+    if(!r.markdown||!r.markdown.trim()){
+      body.innerHTML=`<div class="empty">课件生成为空。可能是该节点还没抓到任何可读资源。<br>建议先点"📚 抓资源",或在 workspace/library/papers/ 手动放 PDF 后再试。</div>`;
+      cnt.textContent='';
+      return;
+    }
+    body.innerHTML=md2html(r.markdown);
+    const meta=[];
+    if(typeof r.sources_used==='number'){meta.push(`${r.sources_used}/${r.sources_total||r.sources_used} 资源`)}
+    if(r.cached){meta.push('缓存')}
+    cnt.textContent=meta.length?`(${meta.join(' · ')})`:'';
+  }catch(e){
+    body.innerHTML='<div class="empty" style="color:var(--danger)">课件生成失败: '+escapeHtml(e.message)+'</div>';
+    cnt.textContent='';
+  }
+}
+
+async function regenCourseware(){
+  await loadCoursewareInline({force:true});
+}
+
+function renderResourceListInto(list, items){
+  if(!items||!items.length){
+    list.innerHTML=`<div class="empty">
+      没抓到任何资源。可能原因:<br>
+      · LLM 没为这个节点想到匹配的论文/仓库(尝试节点描述更具体)<br>
+      · 网络中断 / arxiv 临时不可用<br>
+      · 见终端日志
+    </div>`;
+    return;
+  }
+  list.innerHTML=items.map(x=>{
+    const failed=(x.summary||'').toLowerCase().includes('failed') || (x.title||'').startsWith('[search failed');
+    return `<div class="res" style="${failed?'opacity:0.55':''}">
+    <span class="kind">${x.kind}</span><span class="title">${escapeHtml(x.title)}</span>
+    <div class="meta">${x.local_path?'📁 '+escapeHtml(x.local_path)+'<br>':''}${x.url?'🔗 <a href="'+x.url+'" target="_blank" rel="noopener">'+escapeHtml(x.url)+'</a>':''}</div>
+    ${x.summary?'<div class="meta">'+escapeHtml(String(x.summary).slice(0,300))+'</div>':''}
+  </div>`;
+  }).join('');
+}
+
+function renderResourceList(items){
+  renderResourceListInto(document.getElementById('resList'), items);
+}
+
+async function loadResources(){
+  const n=curNode();if(!n)return;
+  const r=await api('GET','/api/resources/'+n.id);
+  renderResourceList(r.resources);
+}
+async function doPractices(){
+  const card=document.getElementById('practiceCard');
+  const body=document.getElementById('practiceContent');
+  card.style.display='block';
+  body.innerHTML='<div class="empty"><span class="spinner"></span> 生成中,通常 10–20 秒...</div>';
+  try{
+    const r=await api('POST','/api/practices');
+    body.innerHTML=md2html(r.text);
+    card.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }
+  catch(e){body.innerHTML='<div class="empty" style="color:var(--danger)">失败: '+escapeHtml(e.message)+'</div>'}
+}
+async function doArchive(){
+  toast('归档中...');
+  try{const r=await api('POST','/api/archive',{});toast(`已写 ${r.files.length} 个文件`);loadKbNode()}
+  catch(e){alert('失败: '+e.message)}
+}
+async function doArchiveAll(){
+  toast('全量归档中,可能要 1–2 分钟...');
+  try{const r=await api('POST','/api/archive',{all_active:true});toast(`已写 ${r.files.length} 个文件`);loadKbIndex()}
+  catch(e){alert('失败: '+e.message)}
+}
+async function doAdvance(){
+  if(!confirm('标记当前节点完成并推进到下一个?'))return;
+  try{const r=await api('POST','/api/advance');toast(r.next?'→ 下一节点 '+r.next:'🎉 全部完成');refreshAll()}
+  catch(e){alert('失败: '+e.message)}
+}
+async function loadKbIndex(){
+  const r=await api('GET','/api/kb');
+  document.getElementById('kbContent').innerHTML=md2html(r.markdown);
+}
+async function loadKbNode(){
+  const n=curNode();if(!n){loadKbIndex();return}
+  const r=await api('GET','/api/kb/'+n.id);
+  document.getElementById('kbContent').innerHTML=md2html(r.markdown);
+}
+async function startTest(){
+  const n=curNode();if(!n)return;
+  toast('出题中...');
+  try{
+    const r=await api('POST','/api/test/start',{node_id:n.id});
+    state.test={node_id:n.id,questions:r.questions,attempts:[],idx:0};
+    renderTest();
+  }catch(e){alert('失败: '+e.message)}
+}
+function renderTest(){
+  const t=state.test;const area=document.getElementById('testArea');
+  if(!t){area.innerHTML='<div class="empty">点上方"出 5 题"开始</div>';return}
+  if(t.idx>=t.questions.length){
+    const avg=t.attempts.length?t.attempts.reduce((s,a)=>s+a.score,0)/t.attempts.length:0;
+    area.innerHTML=`<div class="card"><h3>本场结果</h3>
+      <div style="font-size:24px;font-weight:700">${avg.toFixed(2)}</div>
+      <div class="sub">${t.attempts.length} 题 · 已自动归档到 exercises.jsonl</div>
+      <div class="toolbar" style="margin-top:10px"><button class="btn primary" onclick="startTest()">再来一组</button></div>
+    </div>`;
+    api('POST','/api/test/submit',{node_id:t.node_id,questions:t.questions,attempts:t.attempts}).catch(()=>{});
+    return;
+  }
+  const q=t.questions[t.idx];
+  area.innerHTML=`<div class="test-q">
+    <div class="qhead">Q${t.idx+1}/${t.questions.length} <span class="qtype">${q.type}</span></div>
+    <div style="margin-bottom:8px">${escapeHtml(q.question)}</div>
+    <textarea id="ansBox" rows="5" placeholder="作答..."></textarea>
+    <div class="toolbar" style="margin-top:8px"><button class="btn primary" onclick="submitAns()">提交</button>
+    <button class="btn" onclick="skipAns()">跳过</button></div>
+    <div id="fb"></div>
+  </div>`;
+}
+async function submitAns(){
+  const t=state.test;const q=t.questions[t.idx];const ans=document.getElementById('ansBox').value;
+  const fb=document.getElementById('fb');fb.innerHTML='<div class="feedback warn"><span class="spinner"></span> 评分中...</div>';
+  try{
+    const r=await api('POST','/api/test/grade',{node_id:t.node_id,qid:q.qid,question:q.question,expected_points:q.expected_points,qtype:q.type,answer:ans});
+    t.attempts.push(r);
+    const cls=r.score>=0.8?'ok':r.score>=0.6?'warn':'bad';
+    fb.innerHTML=`<div class="feedback ${cls}"><strong>${r.score.toFixed(2)}</strong><br>${escapeHtml(r.feedback)}</div>
+      <div class="toolbar" style="margin-top:6px"><button class="btn primary" onclick="nextQ()">下一题</button></div>`;
+  }catch(e){fb.innerHTML='<div class="feedback bad">评分失败: '+escapeHtml(e.message)+'</div>'}
+}
+function skipAns(){state.test.attempts.push({qid:state.test.questions[state.test.idx].qid,answer:'',score:0,feedback:'(skipped)',attempted_at:new Date().toISOString()});nextQ()}
+function nextQ(){state.test.idx++;renderTest()}
+
+async function loadStats(){
+  const r=await api('GET','/api/stats');state.stats=r;
+  if(r.empty){document.getElementById('v-dashboard').innerHTML='<div class="empty">No data</div>';return}
+  document.getElementById('statGrid').innerHTML=`
+    <div class="stat-card"><div class="stat-label">完成节点</div><div class="stat-value">${r.done_nodes}/${r.total_nodes}</div></div>
+    <div class="stat-card"><div class="stat-label">连续天数</div><div class="stat-value">${r.streak}</div></div>
+    <div class="stat-card"><div class="stat-label">当前节点</div><div class="stat-value" style="font-size:14px">${r.current_node_id||'—'}</div></div>
+    <div class="stat-card"><div class="stat-label">状态</div><div class="stat-value" style="font-size:14px">${r.state}</div></div>
+  `;
+  // heatmap
+  const today=new Date();today.setHours(0,0,0,0);
+  const hm=document.getElementById('heatmap');hm.innerHTML='';
+  const dayOfWeek=today.getDay();
+  for(let i=52*7+dayOfWeek;i>=0;i--){
+    const d=new Date(today-i*86400000).toISOString().slice(0,10);
+    const c=r.by_day[d]||0;
+    let cls='';if(c>0)cls='l1';if(c>=3)cls='l2';if(c>=6)cls='l3';if(c>=10)cls='l4';
+    hm.innerHTML+=`<div class="hc ${cls}" title="${d}: ${c} 活动"></div>`;
+  }
+  // scores
+  document.getElementById('scoresList').innerHTML=r.scores.length?r.scores.slice(-15).reverse().map(s=>`<div class="res"><span class="kind">${s.node}</span> ${s.date} · <strong>${s.score.toFixed(2)}</strong></div>`).join(''):'<div class="empty">暂无</div>';
+}
+async function genWeekly(){
+  toast('生成周复盘中...');
+  try{const r=await api('POST','/api/review/weekly');document.getElementById('reviewContent').innerHTML=md2html(r.markdown);toast('已生成')}
+  catch(e){alert('失败: '+e.message)}
+}
+
+async function loadIndexStats(){
+  try{
+    const s=await api('GET','/api/index/stats');
+    const el=document.getElementById('indexStat');
+    if(!s.n_chunks){el.innerHTML='<span style="color:var(--warn)">⚠️ 还未建索引,点"重新建索引"开始</span>';return}
+    el.innerHTML=`已索引 <strong>${s.n_documents}</strong> 篇 PDF · <strong>${s.n_chunks}</strong> 个 chunk`;
+    if(s.documents&&s.documents.length){
+      el.innerHTML+='<details style="margin-top:6px"><summary style="cursor:pointer">查看文档列表</summary><ul style="margin-top:6px">'+s.documents.map(d=>'<li style="font-family:ui-monospace,monospace;font-size:11px">'+escapeHtml(d)+'</li>').join('')+'</ul></details>';
+    }
+  }catch(e){document.getElementById('indexStat').innerHTML='<span style="color:var(--danger)">'+escapeHtml(e.message)+'</span>'}
+}
+async function rebuildIndex(){
+  if(!confirm('重建索引会扫描 workspace/library/papers/ 所有 PDF,可能需要 1–3 分钟,继续?'))return;
+  toast('索引中,请耐心等待...');
+  try{
+    const r=await api('POST','/api/index',{});
+    toast(`已索引 ${r.n_pdfs} 篇 → ${r.n_chunks} chunks`);
+    loadIndexStats();
+  }catch(e){alert('失败: '+e.message)}
+}
+async function doRagQuery(){
+  const q=document.getElementById('ragQuery').value.trim();if(!q)return;
+  const box=document.getElementById('ragResults');
+  box.innerHTML='<div class="empty"><span class="spinner"></span> 检索中(包含 LLM rerank,约 5–10 秒)...</div>';
+  try{
+    const r=await api('POST','/api/query',{query:q,top_n:5,rerank:true});
+    if(!r.hits.length){box.innerHTML='<div class="empty">无匹配。先建索引?</div>';return}
+    box.innerHTML=r.hits.map(h=>`<div class="card" style="margin-bottom:8px">
+      <div style="font-size:11px;color:var(--mut);font-family:ui-monospace,monospace">[${escapeHtml(h.doc_id)} · §${escapeHtml(h.section)} · p.${h.page}] <span style="color:var(--ok)">score ${h.score}</span></div>
+      <div style="font-weight:600;margin:4px 0">${escapeHtml(h.title)}</div>
+      <div style="font-size:12px;white-space:pre-wrap;color:#333">${escapeHtml(h.preview)}…</div>
+    </div>`).join('');
+  }catch(e){box.innerHTML='<div class="empty" style="color:var(--danger)">'+escapeHtml(e.message)+'</div>'}
+}
+
+refreshAll();
+setInterval(refreshAll,60000);
+</script>
+</body>
+</html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    return INDEX_HTML

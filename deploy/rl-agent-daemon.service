@@ -1,0 +1,18 @@
+# RL Agent Tutor — systemd user service for the scheduler daemon.
+
+[Unit]
+Description=RL Agent Tutor Scheduler (weekly review / idle nudge / monday focus)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/path/to/rl-agent-tutor
+ExecStart=%h/path/to/rl-agent-tutor/.venv/bin/rl-agent daemon --idle-days 3
+Restart=on-failure
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

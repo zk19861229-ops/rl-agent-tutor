@@ -1,0 +1,34 @@
+[project]
+name = "rl-agent-tutor"
+version = "0.1.0"
+description = "An autonomous learning agent for RL/LLM post-training topics"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.39.0",
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.6.0",
+    "python-dotenv>=1.0.0",
+    "feedparser>=6.0.0",
+    "arxiv>=2.1.0",
+    "youtube-transcript-api>=0.6.2",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "apscheduler>=3.10.4",
+    "pymupdf>=1.24.0",
+    "rank-bm25>=0.2.2",
+    "jieba>=0.42.1",
+]
+
+[project.scripts]
+rl-agent = "rl_agent_tutor.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rl_agent_tutor"]
