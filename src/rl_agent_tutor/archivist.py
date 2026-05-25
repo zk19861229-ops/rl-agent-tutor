@@ -5,7 +5,6 @@ containing: core concepts (synthesized), Q&A highlights, mistakes & corrections,
 resource index, and an open-questions list.
 """
 from __future__ import annotations
-import re
 from pathlib import Path
 from datetime import datetime
 from .llm import chat
@@ -14,6 +13,7 @@ from .store import (
     load_trajectory, load_exercises, load_resources,
 )
 from .config import workspace_path
+from .utils import slugify
 from . import rag
 
 
@@ -85,8 +85,7 @@ Produce a Markdown knowledge base entry with this exact structure:
 
 
 def _slugify(s: str) -> str:
-    s = re.sub(r"[^a-zA-Z0-9_-]+", "_", s).strip("_")
-    return s[:60].lower()
+    return slugify(s, n=60, lower=True)
 
 
 def _format_resources(rs: list[Resource]) -> str:
@@ -145,9 +144,8 @@ def archive_node(node: LearningNode, stage_name: str = "", use_rag: bool = True)
     rag_block = ""
     if use_rag:
         query = f"{node.name}. {node.description}. " + " ".join(node.objectives)
-        hits = rag.retrieve(query, top_n=4, rerank=True)
-        if hits:
-            ctx, _ = rag.render_context(hits, max_chars=6000)
+        ctx, _, _ = rag.with_rag(query, top_n=4, max_chars=6000)
+        if ctx:
             rag_block = "\n## Library excerpts (cite these in the KB when relevant)\n" + ctx
 
     user = ARCHIVIST_USER_TEMPLATE.format(

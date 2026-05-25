@@ -79,9 +79,8 @@ def generate_exercises(node: LearningNode, use_rag: bool = True) -> list[Exercis
     if use_rag:
         # use the node name + objectives as the retrieval query
         query = f"{node.name}. {node.description}. " + " ".join(node.objectives)
-        hits = rag.retrieve(query, top_n=4, rerank=True)
-        if hits:
-            ctx, _ = rag.render_context(hits, max_chars=6000)
+        ctx, _, _ = rag.with_rag(query, top_n=4, max_chars=6000)
+        if ctx:
             rag_block = "## Local library excerpts\n" + ctx
 
     raw = chat_json(EXAMINER_GEN_SYSTEM, EXAMINER_GEN_USER_TPL.format(

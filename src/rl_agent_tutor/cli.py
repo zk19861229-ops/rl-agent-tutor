@@ -1,5 +1,6 @@
 """CLI entrypoint — typer-based, rich-formatted."""
 from __future__ import annotations
+import functools
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
@@ -20,6 +21,48 @@ from .llm import provider_info
 
 app = typer.Typer(help="RL Agent Tutor — autonomous learning agent for RL/LLM post-training.", no_args_is_help=True)
 console = Console()
+
+
+def _safe_llm(fn):
+    """Convert LLM/network/JSON failures into a clean CLI error.
+
+    Without this, `chat_json` reaching its retry cap would surface as a raw
+    Python traceback at the user — opaque and scary. With it: one red line +
+    typer.Exit(1)."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except typer.Exit:
+            raise
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Interrupted.[/yellow]")
+            raise typer.Exit(130)
+        except Exception as e:
+            kind = type(e).__name__
+            msg = str(e) or "(no message)"
+            console.print(f"[red]✗ {fn.__name__} failed:[/red] {kind}: {msg}")
+            hint = _classify_hint(e)
+            if hint:
+                console.print(f"[dim]  hint: {hint}[/dim]")
+            raise typer.Exit(1)
+    return wrapper
+
+
+def _classify_hint(e: Exception) -> str:
+    name = type(e).__name__.lower()
+    s = str(e).lower()
+    if "api key" in s or "auth" in s or "401" in s or "403" in s:
+        return "check ANTHROPIC_API_KEY / OPENROUTER_API_KEY in .env"
+    if "timeout" in name or "timeout" in s:
+        return "network slow or LLM endpoint unreachable; try again"
+    if "rate" in s or "429" in s:
+        return "rate limited — wait a minute or switch provider"
+    if "json" in s and ("parse" in s or "decode" in s):
+        return "LLM returned malformed JSON repeatedly; try a smaller request"
+    if "connection" in name or "remote" in name:
+        return "network blip; rerun the command"
+    return ""
 
 
 def _require_plan():
@@ -44,6 +87,7 @@ def _require_current_node():
 
 
 @app.command()
+@_safe_llm
 def plan(
     goal: str = typer.Argument(..., help="Your learning goal, e.g. '掌握 PPO 并能用 TRL 跑通 RLHF'"),
     level: str = typer.Option("", "--level", "-l", help="Your current level"),
@@ -97,6 +141,7 @@ def status():
 
 
 @app.command()
+@_safe_llm
 def fetch():
     """Fetch papers, code, and resource pointers for the current node."""
     p, n, s = _require_current_node()
@@ -142,6 +187,7 @@ def resources(
 
 
 @app.command()
+@_safe_llm
 def ask(question: str = typer.Argument(..., help="Your question")):
     """Ask the tutor about the current node (RAG-enabled)."""
     p, n, s = _require_current_node()
@@ -158,6 +204,7 @@ def ask(question: str = typer.Argument(..., help="Your question")):
 
 
 @app.command()
+@_safe_llm
 def practices():
     """Show industry best practices for the current node's topic."""
     p, n, s = _require_current_node()
@@ -168,6 +215,7 @@ def practices():
 
 
 @app.command()
+@_safe_llm
 def test():
     """Generate a 5-question quiz for the current node, grade interactively."""
     p, n, s = _require_current_node()
@@ -273,6 +321,7 @@ def goto(node_id: str = typer.Argument(..., help="Node id to switch to, e.g. 1.2
 
 
 @app.command()
+@_safe_llm
 def archive(
     node_id: str = typer.Argument(None, help="Node id to archive (default: current)"),
     all_completed: bool = typer.Option(False, "--all-completed", help="Archive every completed node"),
@@ -336,6 +385,7 @@ def kb(
 
 
 @app.command("fetch-blog")
+@_safe_llm
 def fetch_blog_cmd(url: str = typer.Argument(..., help="Blog/article URL")):
     """Fetch and store a single blog post into the current node's library."""
     p, n, s = _require_current_node()
@@ -355,6 +405,7 @@ def fetch_blog_cmd(url: str = typer.Argument(..., help="Blog/article URL")):
 
 
 @app.command("fetch-youtube")
+@_safe_llm
 def fetch_youtube_cmd(
     url_or_id: str = typer.Argument(..., help="YouTube URL or 11-char video ID"),
     title: str = typer.Option("", "--title", "-t"),
@@ -378,6 +429,7 @@ def fetch_youtube_cmd(
 
 
 @app.command("review-weekly")
+@_safe_llm
 def review_weekly_cmd():
     """Generate a weekly retrospective (last 7 days)."""
     from . import reviewer
@@ -389,6 +441,7 @@ def review_weekly_cmd():
 
 
 @app.command("review-stage")
+@_safe_llm
 def review_stage_cmd(stage_id: int = typer.Argument(..., help="Stage id, e.g. 0")):
     """Generate a stage retrospective."""
     from . import reviewer
@@ -502,6 +555,7 @@ def daemon(
 
 
 @app.command("index")
+@_safe_llm
 def index_cmd():
     """(Re)index every PDF under workspace/library/papers/ for RAG."""
     from . import indexer
@@ -517,6 +571,7 @@ def index_cmd():
 
 
 @app.command("query")
+@_safe_llm
 def query_cmd(
     q: str = typer.Argument(..., help="Search query"),
     n: int = typer.Option(5, "--top", help="Top N results"),

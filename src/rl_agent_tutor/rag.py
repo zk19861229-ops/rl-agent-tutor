@@ -137,3 +137,19 @@ def render_context(hits: list[Hit], *, max_chars: int = 8000) -> tuple[str, list
         })
         total += len(block)
     return "\n\n".join(blocks), used
+
+
+def with_rag(query: str, *, top_n: int = 5, max_chars: int = 8000,
+             rerank: bool = True,
+             doc_filter: Optional[list[str]] = None) -> tuple[str, list[dict], list[Hit]]:
+    """One-shot retrieval+render used by tutor/examiner/archivist.
+
+    Returns (context_text, citations, hits). All callers want the same
+    retrieve→render pair, so collapse it here. context_text is "" when there's
+    no index or no hit — caller decides whether to skip injection.
+    """
+    hits = retrieve(query, top_n=top_n, rerank=rerank, doc_filter=doc_filter)
+    if not hits:
+        return "", [], []
+    text, citations = render_context(hits, max_chars=max_chars)
+    return text, citations, hits
