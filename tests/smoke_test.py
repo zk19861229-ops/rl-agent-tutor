@@ -28,6 +28,25 @@ SMOKE_DIR = Path(__file__).resolve().parent.parent / "workspace_smoketest"
 os.environ["WORKSPACE_DIR"] = str(SMOKE_DIR)
 
 
+if "pytest" in sys.modules:
+    import pytest
+
+    if os.environ.get("RUN_SMOKE_TESTS") != "1":
+        pytestmark = pytest.mark.skip(
+            reason=(
+                "end-to-end smoke test uses real LLM/network calls; "
+                "set RUN_SMOKE_TESTS=1 to include it"
+            )
+        )
+
+    @pytest.fixture(scope="module")
+    def plan():
+        if SMOKE_DIR.exists():
+            shutil.rmtree(SMOKE_DIR)
+        SMOKE_DIR.mkdir(parents=True, exist_ok=True)
+        return test_planner()
+
+
 GREEN = "\033[92m"; RED = "\033[91m"; YELLOW = "\033[93m"
 CYAN = "\033[96m"; BOLD = "\033[1m"; DIM = "\033[2m"; END = "\033[0m"
 

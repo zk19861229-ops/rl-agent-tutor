@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>RL Agent Tutor</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+
+<header>
+  <div>
+    <h1>RL Agent Tutor</h1>
+    <div class="sub" id="metaLine">Loading…</div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <select id="wsSelect" onchange="onWsChange()" title="当前学习工作区"
+            style="padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--card);font-size:12px"></select>
+    <button class="btn" onclick="openNewWs()" title="新建一个独立的学习任务">+ 新任务</button>
+    <button class="btn" onclick="refreshAll()">🔄 刷新</button>
+  </div>
+</header>
+
+<div class="modal-bg" id="newWsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:99;align-items:center;justify-content:center">
+  <div class="card" style="max-width:420px;width:90%;margin:0">
+    <h3 style="margin-bottom:8px">新建学习任务</h3>
+    <div class="sub" style="margin-bottom:10px">每个任务有独立的计划、问答、知识库、归档。互不干扰。</div>
+    <input id="newWsName" placeholder="任务标识(英文小写,如 rust-async, system-design)" style="margin-bottom:8px"/>
+    <div class="sub" style="font-size:11px;margin-bottom:8px">只允许 a-z、0-9、_、-,最多 40 字符</div>
+    <div style="display:flex;gap:6px;justify-content:flex-end">
+      <button class="btn" onclick="closeNewWs()">取消</button>
+      <button class="btn primary" onclick="confirmNewWs()">创建并切换</button>
+    </div>
+  </div>
+</div>
+
+<div id="noPlan" style="display:none">
+  <div class="card">
+    <h3>开始一个学习计划</h3>
+    <input id="goal" placeholder="学习目标,如:掌握 PPO 并能用 TRL 跑通 RLHF" style="margin-bottom:8px"/>
+    <input id="level" placeholder="当前水平(可选)"/>
+    <div style="margin-top:10px"><button class="btn primary" onclick="createPlan()">生成计划</button></div>
+  </div>
+</div>
+
+<div id="hasPlan" style="display:none">
+  <div class="tabs">
+    <div class="tab active" data-v="study">学习</div>
+    <div class="tab" data-v="resources">资源</div>
+    <div class="tab" data-v="kb">知识库</div>
+    <div class="tab" data-v="test">自测</div>
+    <div class="tab" data-v="dashboard">看板</div>
+    <div class="tab" data-v="review">复盘</div>
+    <div class="tab" data-v="library">📚 RAG</div>
+  </div>
+
+  <div id="v-study" class="view active">
+    <div class="row">
+      <div>
+        <div class="card">
+          <h3>学习路径</h3>
+          <div id="planTree"></div>
+        </div>
+        <div class="card">
+          <h3>下一步建议</h3>
+          <div id="nextAction" class="sub" style="white-space:pre-wrap"></div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h3 id="curHead">当前节点</h3>
+          <div id="curBody"></div>
+          <div class="toolbar" style="margin-top:10px">
+            <button class="btn primary" onclick="doFetch()">📚 抓资源</button>
+            <button class="btn" onclick="doCourseware()">📖 生成课件</button>
+            <button class="btn" onclick="doPractices()">⭐ 行业实践</button>
+            <button class="btn" onclick="setView('test');startTest()">🧪 开始自测</button>
+            <button class="btn" onclick="doArchive()">📝 归档为KB</button>
+            <button class="btn" onclick="doAdvance()">➡️ 完成并推进</button>
+          </div>
+        </div>
+        <div class="card" id="inlineResourcesCard" style="display:none">
+          <h3 style="display:flex;justify-content:space-between;align-items:center">
+            <span>📚 本节点资源 <span id="inlineResourcesCount" class="sub" style="font-weight:normal;font-size:12px"></span></span>
+            <span style="display:flex;gap:10px;align-items:center;font-weight:normal;font-size:12px">
+              <span style="cursor:pointer;color:var(--mut)" onclick="doFetch()" title="重新抓取资源">🔄 重新抓取</span>
+              <span style="cursor:pointer;color:var(--mut)" onclick="document.getElementById('inlineResourcesCard').style.display='none'">收起 ✕</span>
+            </span>
+          </h3>
+          <div id="inlineResourcesList"></div>
+        </div>
+        <div class="card" id="inlineResCard" style="display:none">
+          <h3 style="display:flex;justify-content:space-between;align-items:center">
+            <span>📖 学习课件 <span id="inlineResCount" class="sub" style="font-weight:normal;font-size:12px"></span></span>
+            <span style="display:flex;gap:10px;align-items:center;font-weight:normal;font-size:12px">
+              <span style="cursor:pointer;color:var(--mut)" onclick="regenCourseware()" title="基于当前已抓资源重新生成">🔄 重新生成</span>
+              <span style="cursor:pointer;color:var(--mut)" onclick="document.getElementById('inlineResCard').style.display='none'">收起 ✕</span>
+            </span>
+          </h3>
+          <div id="inlineResList" class="kb"></div>
+        </div>
+        <div class="card" id="practiceCard" style="display:none">
+          <h3 style="display:flex;justify-content:space-between;align-items:center">
+            <span>⭐ 行业实践</span>
+            <span style="cursor:pointer;color:var(--mut);font-weight:normal;font-size:12px" onclick="document.getElementById('practiceCard').style.display='none'">收起 ✕</span>
+          </h3>
+          <div id="practiceContent" class="kb"></div>
+        </div>
+        <div class="card">
+          <h3>问 Tutor</h3>
+          <div id="qaHistory"></div>
+          <textarea id="qaInput" rows="3" placeholder="向 tutor 提问,自动带节点上下文"></textarea>
+          <div style="margin-top:8px"><button class="btn primary" onclick="doAsk()" id="askBtn">提问</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="v-resources" class="view">
+    <div class="card">
+      <h3>当前节点资源</h3>
+      <div class="toolbar"><button class="btn primary" onclick="doFetch()">🔄 重新抓取</button></div>
+      <div id="resList"></div>
+    </div>
+  </div>
+
+  <div id="v-kb" class="view">
+    <div class="card">
+      <h3>知识库</h3>
+      <div class="toolbar">
+        <button class="btn" onclick="loadKbIndex()">总览索引</button>
+        <button class="btn" onclick="loadKbNode()">当前节点</button>
+        <button class="btn primary" onclick="doArchive()">📝 归档当前节点</button>
+        <button class="btn" onclick="doArchiveAll()">📝 归档所有有活动的节点</button>
+      </div>
+      <div id="kbContent" class="kb"></div>
+    </div>
+  </div>
+
+  <div id="v-test" class="view">
+    <div class="card">
+      <h3>自测</h3>
+      <div class="toolbar">
+        <button class="btn primary" onclick="startTest()">🎯 出 5 题</button>
+      </div>
+      <div id="testArea"></div>
+    </div>
+  </div>
+
+  <div id="v-dashboard" class="view">
+    <div class="stat-grid" id="statGrid"></div>
+    <div class="card"><h3>近 53 周活动热力</h3><div class="heat" id="heatmap"></div></div>
+    <div class="card"><h3>近期自测分</h3><div id="scoresList"></div></div>
+  </div>
+
+  <div id="v-review" class="view">
+    <div class="card">
+      <h3>复盘</h3>
+      <div class="toolbar"><button class="btn primary" onclick="genWeekly()">📅 生成周复盘</button></div>
+      <div id="reviewContent" class="kb"></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

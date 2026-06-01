@@ -25,6 +25,7 @@ dependencies = [
 
 [project.scripts]
 rl-agent = "rl_agent_tutor.cli:app"
+rl-agent-web = "rl_agent_tutor.server:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -32,3 +33,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rl_agent_tutor"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/rl_agent_tutor/web/index.html" = "rl_agent_tutor/web/index.html"
+"src/rl_agent_tutor/web/style.css" = "rl_agent_tutor/web/style.css"
+"src/rl_agent_tutor/web/app.js" = "rl_agent_tutor/web/app.js"

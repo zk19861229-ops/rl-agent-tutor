@@ -22,9 +22,8 @@ Logs:
 
     <key>ProgramArguments</key>
     <array>
-        <!-- ⚠️ 改成你的 venv 里的 rl-agent 绝对路径 -->
-        <string>/Users/YOUR_USERNAME/path/to/rl-agent-tutor/.venv/bin/rl-agent</string>
-        <string>serve</string>
+        <!-- ⚠️ 改成你的 venv 里的 rl-agent-web 绝对路径 -->
+        <string>/Users/YOUR_USERNAME/path/to/rl-agent-tutor/.venv/bin/rl-agent-web</string>
         <string>--host</string>
         <string>127.0.0.1</string>
         <string>--port</string>

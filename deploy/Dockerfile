@@ -22,4 +22,4 @@ ENV WORKSPACE_DIR=/workspace
 EXPOSE 8765
 
 # default to web; override with `command: rl-agent daemon ...` for the second container
-CMD ["rl-agent", "serve", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["rl-agent-web", "--host", "0.0.0.0", "--port", "8765"]

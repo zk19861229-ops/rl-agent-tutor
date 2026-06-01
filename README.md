@@ -40,6 +40,18 @@ cp .env.example .env
 
 ### 3. 第一次使用
 
+如果想用浏览器界面,先启动 Web UI:
+
+```bash
+rl-agent-web
+# 默认访问 http://127.0.0.1:8765
+
+# 兼容入口,等价于上面:
+rl-agent serve
+```
+
+命令行闭环也可以直接使用:
+
 ```bash
 # 生成学习计划
 rl-agent plan "掌握 PPO 并能用 TRL 跑通 RLHF 流水线" --level "深度学习熟练,RL 零基础"
@@ -82,6 +94,54 @@ rl-agent advance
 | `rl-agent advance` | 把当前节点标记完成,跳到下一节点 |
 | `rl-agent goto <node_id>` | 跳到指定节点(跳过 / 回头) |
 | `rl-agent trajectory [node_id]` | 看学习轨迹流水 |
+| `rl-agent serve [--host 127.0.0.1] [--port 8765] [--reload]` | 从主 CLI 启动本地 Web UI |
+| `rl-agent-web [--host 127.0.0.1] [--port 8765] [--reload]` | 独立 Web UI 入口 |
+| `rl-agent workspace list/create/switch/current/rename/delete` | 管理多个学习工作区 |
+| `rl-agent archive [node_id]` | 把学习轨迹、资源和自测整理成知识库 Markdown |
+| `rl-agent kb [node_id]` | 查看知识库索引或某节点笔记 |
+| `rl-agent index` | 为本地 PDF 建 RAG 索引 |
+| `rl-agent query "<问题>"` | 搜索本地 PDF 索引 |
+
+---
+
+## Web UI
+
+Web 入口由 FastAPI 提供,静态文件在 `src/rl_agent_tutor/web/`。
+
+```bash
+rl-agent-web
+# 或
+rl-agent serve --host 127.0.0.1 --port 8765
+```
+
+打开 `http://127.0.0.1:8765` 后可以在浏览器里完成计划、资源抓取、答疑、自测、归档、RAG 检索和工作区切换。
+
+如果要用 `uvicorn` 直接启动:
+
+```bash
+uvicorn rl_agent_tutor.server:create_app --factory --host 127.0.0.1 --port 8765
+```
+
+局域网访问时可以把 `--host` 改成 `0.0.0.0`,但这个应用默认没有登录认证。暴露到局域网或远程前,建议先加反向代理认证或放到 Tailscale 等私有网络里。
+
+---
+
+## 测试验证
+
+默认测试集不调用真实 LLM / 网络,适合作为本地回归:
+
+```bash
+pytest -q
+python -m compileall -q src/rl_agent_tutor tests
+```
+
+真实端到端 smoke 测试默认跳过,需要显式开启:
+
+```bash
+RUN_SMOKE_TESTS=1 pytest tests/smoke_test.py
+```
+
+这组测试会真实调用 LLM、可能访问 arxiv/GitHub,需要已配置 `ANTHROPIC_API_KEY` 或 OpenRouter,并会在项目下创建 `workspace_smoketest/`。
 
 ---
 
@@ -118,15 +178,23 @@ workspace/
 
 按周迭代:
 
-- **Week 2**:Archivist Agent(自动整理对话/笔记成知识库)+ 多源 librarian(博客抓取、YouTube 字幕)
-- **Week 3**:FastAPI Web UI(浏览器看板 + 交互)、APScheduler 定时任务(每周日复盘、3 天没动提醒)
-- **Week 4**:Reviewer Agent(阶段复盘报告)、知识地图自动生成、导出整个学习成果
+- **知识地图**:自动从计划、资源和归档笔记生成可视化学习地图
+- **导出能力**:导出整个学习成果包,便于备份、复盘或分享
+- **通知增强**:更细粒度的提醒策略和复习计划
 
 ---
 
 ## 故障排查
 
 **`ANTHROPIC_API_KEY not set`** — 检查 `.env` 文件是否在项目根目录、是否填了 key。
+
+**Anthropic 403 `Request not allowed`** — key 通了,但当前账号/项目无权访问 `.env` 里的模型。把 `.env` 中的 `ANTHROPIC_MODEL` 改成可用模型,例如:
+
+```bash
+ANTHROPIC_MODEL=claude-sonnet-4-5
+```
+
+改完后重启 `rl-agent-web`。
 
 **`git not installed`** — librarian 会跳过 clone,只记录链接。装 git 后再 `rl-agent fetch` 就行。
 
@@ -145,14 +213,19 @@ rl-agent-tutor/
 ├── README.md
 └── src/rl_agent_tutor/
     ├── cli.py            # typer CLI 入口
+    ├── server.py         # FastAPI Web 入口(create_app / rl-agent-web)
     ├── config.py         # 环境变量与工作区
     ├── models.py         # Pydantic 数据模型
     ├── store.py          # 文件持久化
     ├── llm.py            # Anthropic 封装
-    ├── orchestrator.py   # 状态机
+    ├── services/         # CLI 和 API 共享的业务服务
+    ├── routes/           # FastAPI 路由
+    ├── web/              # 浏览器端静态资源
     ├── planner.py        # 路径规划 Agent
     ├── librarian.py      # 资源获取 Agent
     ├── tutor.py          # 答疑 Agent
     ├── examiner.py       # 评测 Agent
+    ├── archivist.py      # 知识库归档 Agent
+    ├── reviewer.py       # 周期/阶段复盘 Agent
     └── practice.py       # 最佳实践 Agent
 ```

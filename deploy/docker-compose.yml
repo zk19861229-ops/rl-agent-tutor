@@ -30,7 +30,7 @@ services:
       - "127.0.0.1:8765:8765"   # bind only to localhost — change to 0.0.0.0 for LAN
     volumes:
       - ../workspace:/workspace
-    command: ["rl-agent", "serve", "--host", "0.0.0.0", "--port", "8765"]
+    command: ["rl-agent-web", "--host", "0.0.0.0", "--port", "8765"]
 
   daemon:
     image: rl-agent-tutor:latest

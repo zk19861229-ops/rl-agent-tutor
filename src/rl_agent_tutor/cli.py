@@ -8,14 +8,17 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 
 from . import config as _cfg
-from .config import ensure_workspace
 from .store import (
-    save_plan, load_plan, append_trajectory, load_trajectory,
-    load_resources, append_exercise, load_exercises,
+    append_trajectory, load_trajectory,
+    load_exercises,
 )
 from .models import TrajectoryEntry, ExerciseSession
-from . import planner, librarian, tutor, examiner, practice, orchestrator, archivist, workspaces
+from . import tutor, examiner, practice, workspaces
 from .llm import provider_info
+from .services import knowledge as knowledge_service
+from .services import learning as learning_service
+from .services import resources as resources_service
+from .services import testing as testing_service
 
 
 app = typer.Typer(help="RL Agent Tutor — autonomous learning agent for RL/LLM post-training.", no_args_is_help=True)
@@ -23,24 +26,23 @@ console = Console()
 
 
 def _require_plan():
-    p = load_plan()
-    if not p:
+    try:
+        return learning_service.require_plan()
+    except learning_service.PlanNotFoundError:
         console.print("[red]No plan found.[/red] Run `rl-agent plan \"<your goal>\"` first.")
         raise typer.Exit(1)
-    return p
 
 
 def _require_current_node():
-    p = _require_plan()
-    if not p.current_node_id:
-        console.print("[red]No current node set.[/red]")
+    try:
+        ctx = learning_service.require_current_node()
+    except learning_service.PlanNotFoundError:
+        console.print("[red]No plan found.[/red] Run `rl-agent plan \"<your goal>\"` first.")
         raise typer.Exit(1)
-    n = p.find_node(p.current_node_id)
-    if not n:
-        console.print(f"[red]Current node {p.current_node_id} not found in plan.[/red]")
+    except learning_service.NoCurrentNodeError as e:
+        console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
-    s = p.stage_of(n.id)
-    return p, n, s
+    return ctx.plan, ctx.node, ctx.stage
 
 
 @app.command()
@@ -49,18 +51,17 @@ def plan(
     level: str = typer.Option("", "--level", "-l", help="Your current level"),
 ):
     """Generate a structured learning plan for a goal."""
-    ensure_workspace()
-    if load_plan():
+    if learning_service.plan_exists():
         if not typer.confirm("⚠️ A plan already exists. Replace it?", default=False):
             raise typer.Exit()
     console.print(f"[cyan]Planning for:[/cyan] {goal}")
     with console.status("[bold]Calling planner agent...[/bold]"):
-        new_plan = planner.make_plan(goal, level)
-    save_plan(new_plan)
-    append_trajectory(TrajectoryEntry(kind="plan", content=f"Goal: {goal}", meta={"level": level}))
+        new_plan = learning_service.create_plan(goal, level)
     _print_plan(new_plan)
     console.print(f"\n[green]✔ Plan saved to {_cfg.WORKSPACE_DIR}/progress/plan.json[/green]")
-    console.print(orchestrator.suggest_next_action(new_plan))
+    status = learning_service.get_plan_status()
+    if status:
+        console.print(status.next_action)
 
 
 def _print_plan(p):
@@ -86,13 +87,17 @@ def _print_plan(p):
 @app.command()
 def status():
     """Show current plan, current node, and suggested next action."""
-    p = _require_plan()
+    status = learning_service.get_plan_status()
+    if not status:
+        console.print("[red]No plan found.[/red] Run `rl-agent plan \"<your goal>\"` first.")
+        raise typer.Exit(1)
+    p = status.plan
     _print_plan(p)
-    console.print(Panel(orchestrator.suggest_next_action(p), title="Next action", border_style="cyan"))
-    # quick stats
-    total = len(p.all_nodes())
-    done = sum(1 for n in p.all_nodes() if n.status == "completed")
-    console.print(f"\nProgress: [bold]{done}/{total}[/bold] nodes completed ({done/total*100:.0f}%)")
+    console.print(Panel(status.next_action, title="Next action", border_style="cyan"))
+    console.print(
+        f"\nProgress: [bold]{status.completed_nodes}/{status.total_nodes}[/bold] "
+        f"nodes completed ({status.completion_percent:.0f}%)"
+    )
     console.print(f"[dim]LLM: {provider_info()}[/dim]")
 
 
@@ -102,7 +107,7 @@ def fetch():
     p, n, s = _require_current_node()
     console.print(f"[cyan]Fetching resources for[/cyan] {n.id} {n.name}")
     with console.status("[bold]Querying librarian agent + arxiv + GitHub...[/bold]"):
-        resources = librarian.fetch_for_node(n)
+        resources = resources_service.fetch_for_current_node().resources
     if not resources:
         console.print("[yellow]No resources returned.[/yellow]")
         return
@@ -116,7 +121,6 @@ def fetch():
             local = "…" + local[-37:]
         table.add_row(r.kind, r.title[:60], local)
     console.print(table)
-    append_trajectory(TrajectoryEntry(node_id=n.id, kind="fetch", content=f"fetched {len(resources)} resources"))
 
 
 @app.command()
@@ -126,7 +130,7 @@ def resources(
     """List resources fetched so far for a node."""
     p = _require_plan()
     nid = node_id or p.current_node_id
-    rs = load_resources(node_id=nid)
+    rs = resources_service.list_node_resources(nid)
     if not rs:
         console.print(f"[yellow]No resources for {nid}. Run `rl-agent fetch` first.[/yellow]")
         return
@@ -179,8 +183,7 @@ def test():
         return
 
     session = ExerciseSession(node_id=n.id, questions=questions)
-    p.state = "self_testing"
-    save_plan(p)
+    testing_service.mark_self_testing()
 
     for i, q in enumerate(questions, 1):
         console.print(Panel(
@@ -207,21 +210,14 @@ def test():
             title="Feedback", border_style=color,
         ))
 
-    avg, summary = examiner.summarize_session(session.attempts)
-    session.overall_score = avg
-    from datetime import datetime
-    session.finished_at = datetime.now().isoformat()
-    append_exercise(session)
-    append_trajectory(TrajectoryEntry(node_id=n.id, kind="test", content=summary, meta={"score": avg}))
-    console.print(Panel(summary, title=f"Session result · {n.id}", border_style="cyan"))
+    result = testing_service.submit_session(session)
+    avg = result.overall_score
+    console.print(Panel(result.summary, title=f"Session result · {n.id}", border_style="cyan"))
 
     if avg >= 0.8:
         console.print("[green]→ Strong score. You may run `rl-agent advance` to mark this node complete and move on.[/green]")
-        p.state = "advancing"
     else:
         console.print("[yellow]→ Recommend more study + re-test. Use `rl-agent ask` to revisit weak points.[/yellow]")
-        p.state = "studying"
-    save_plan(p)
 
 
 @app.command()
@@ -230,11 +226,9 @@ def advance():
     p, n, s = _require_current_node()
     if not typer.confirm(f"Mark node {n.id} ({n.name}) as completed?", default=True):
         raise typer.Exit()
-    orchestrator.mark_node_completed(p, n.id)
-    new_id = orchestrator.advance_to_next(p)
-    append_trajectory(TrajectoryEntry(node_id=n.id, kind="advance", content=f"completed; next={new_id}"))
-    if new_id:
-        nxt = p.find_node(new_id)
+    result = learning_service.advance_current_node()
+    if result.next_node_id:
+        nxt = result.plan.find_node(result.next_node_id)
         console.print(f"[green]✔ {n.id} completed.[/green] [cyan]→ Next: {nxt.id} {nxt.name}[/cyan]")
     else:
         console.print("[green]🎉 All nodes complete! Run `rl-agent review` for a final retrospective.[/green]")
@@ -259,16 +253,15 @@ def trajectory(
 @app.command()
 def goto(node_id: str = typer.Argument(..., help="Node id to switch to, e.g. 1.2")):
     """Jump current focus to a different node (skip / go back)."""
-    p = _require_plan()
-    n = p.find_node(node_id)
-    if not n:
+    try:
+        p = learning_service.goto_node(node_id)
+    except learning_service.PlanNotFoundError:
+        console.print("[red]No plan found.[/red] Run `rl-agent plan \"<your goal>\"` first.")
+        raise typer.Exit(1)
+    except learning_service.NodeNotFoundError:
         console.print(f"[red]Node {node_id} not found.[/red]")
         raise typer.Exit(1)
-    p.current_node_id = n.id
-    if n.status == "pending":
-        n.status = "in_progress"
-    p.state = "studying"
-    save_plan(p)
+    n = p.find_node(node_id)
     console.print(f"[green]✔ Switched to {n.id} {n.name}[/green]")
 
 
@@ -279,33 +272,21 @@ def archive(
     all_active: bool = typer.Option(False, "--all-active", help="Archive every node with any activity"),
 ):
     """Distill a node's trajectory + exercises + resources into a Markdown KB entry."""
-    p = _require_plan()
-    targets: list = []
-    if all_completed:
-        targets = archivist.archive_all(p, only_completed=True)
-    elif all_active:
-        targets = archivist.archive_all(p, only_completed=False)
-    else:
-        nid = node_id or p.current_node_id
-        n = p.find_node(nid) if nid else None
-        if not n:
-            console.print(f"[red]Node {nid} not found.[/red]")
-            raise typer.Exit(1)
-        s = p.stage_of(n.id)
-        with console.status(f"[bold]Archivist curating {n.id}...[/bold]"):
-            target = archivist.archive_node(n, stage_name=s.name if s else "")
-        targets = [target]
-    # always rebuild the index
-    idx = archivist.build_index(p)
-    targets.append(idx)
-    append_trajectory(TrajectoryEntry(
-        node_id=node_id, kind="review",
-        content=f"archived {len(targets)} files",
-    ))
-    console.print(f"[green]✔ Wrote {len(targets)} files:[/green]")
-    for t in targets:
+    _require_plan()
+    try:
+        with console.status("[bold]Archivist curating...[/bold]"):
+            result = knowledge_service.archive(
+                node_id=node_id,
+                all_completed=all_completed,
+                all_active=all_active,
+            )
+    except learning_service.NodeNotFoundError:
+        console.print(f"[red]Node {node_id} not found.[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]✔ Wrote {len(result.all_files)} files:[/green]")
+    for t in result.all_files:
         console.print(f"  📝 {t}")
-    console.print(f"[dim]→ Open {idx} for the index.[/dim]")
+    console.print(f"[dim]→ Open {result.index_file} for the index.[/dim]")
 
 
 @app.command()
@@ -313,40 +294,33 @@ def kb(
     node_id: str = typer.Argument(None, help="Node id (default: current)"),
 ):
     """Print the knowledge-base entry for a node, or the index if no node given."""
-    p = _require_plan()
-    from .config import workspace_path
-    from .archivist import _slugify
-    notes_dir = workspace_path("library", "notes")
+    _require_plan()
     if node_id is None:
-        idx = notes_dir / "INDEX.md"
-        if not idx.exists():
+        text = knowledge_service.read_kb_index()
+        if text is None:
             console.print("[yellow]No KB index yet. Run `rl-agent archive` first.[/yellow]")
             return
-        console.print(Markdown(idx.read_text(encoding="utf-8")))
+        console.print(Markdown(text))
         return
-    n = p.find_node(node_id)
-    if not n:
+    try:
+        text = knowledge_service.read_kb_node(node_id)
+    except learning_service.NodeNotFoundError:
         console.print(f"[red]Node {node_id} not found.[/red]")
         raise typer.Exit(1)
-    target = notes_dir / f"{n.id}_{_slugify(n.name)}.md"
-    if not target.exists():
+    if text is None:
         console.print(f"[yellow]No KB entry for {node_id}. Run `rl-agent archive {node_id}` first.[/yellow]")
         return
-    console.print(Markdown(target.read_text(encoding="utf-8")))
+    console.print(Markdown(text))
 
 
 @app.command("fetch-blog")
 def fetch_blog_cmd(url: str = typer.Argument(..., help="Blog/article URL")):
     """Fetch and store a single blog post into the current node's library."""
-    p, n, s = _require_current_node()
-    from .config import workspace_path
-    blogs_dir = workspace_path("library", "notes", "blogs")
+    _require_current_node()
     with console.status(f"[bold]Fetching {url}...[/bold]"):
-        r = librarian.fetch_blog_resource(url, why="", node_id=n.id, blogs_dir=blogs_dir)
+        r = resources_service.fetch_blog_for_current_node(url)
     if r is None:
         console.print("[red]Failed.[/red]"); return
-    from .store import append_resource
-    append_resource(r)
     console.print(f"[green]✔ {r.title}[/green]")
     if r.local_path:
         console.print(f"  📁 {r.local_path}")
@@ -360,16 +334,11 @@ def fetch_youtube_cmd(
     title: str = typer.Option("", "--title", "-t"),
 ):
     """Fetch a YouTube transcript into the current node's library."""
-    p, n, s = _require_current_node()
-    from .config import workspace_path
-    transcripts_dir = workspace_path("library", "notes", "transcripts")
+    _require_current_node()
     with console.status(f"[bold]Fetching transcript for {url_or_id}...[/bold]"):
-        r = librarian.fetch_youtube_resource(url_or_id, title=title, why="",
-                                             node_id=n.id, transcripts_dir=transcripts_dir)
+        r = resources_service.fetch_youtube_for_current_node(url_or_id, title=title)
     if r is None:
         console.print("[red]Failed.[/red]"); return
-    from .store import append_resource
-    append_resource(r)
     console.print(f"[green]✔ {r.title}[/green]")
     if r.local_path:
         console.print(f"  📁 {r.local_path}")
@@ -380,10 +349,9 @@ def fetch_youtube_cmd(
 @app.command("review-weekly")
 def review_weekly_cmd():
     """Generate a weekly retrospective (last 7 days)."""
-    from . import reviewer
-    p = _require_plan()
+    _require_plan()
     with console.status("[bold]Reviewer reflecting on your week...[/bold]"):
-        target = reviewer.weekly_review(p)
+        target = knowledge_service.weekly_review()
     console.print(f"[green]✔ Weekly review → {target}[/green]")
     console.print(Markdown(target.read_text(encoding="utf-8")))
 
@@ -391,10 +359,9 @@ def review_weekly_cmd():
 @app.command("review-stage")
 def review_stage_cmd(stage_id: int = typer.Argument(..., help="Stage id, e.g. 0")):
     """Generate a stage retrospective."""
-    from . import reviewer
-    p = _require_plan()
+    _require_plan()
     with console.status(f"[bold]Reviewer reflecting on stage {stage_id}...[/bold]"):
-        target = reviewer.stage_review(p, stage_id)
+        target = knowledge_service.stage_review(stage_id)
     console.print(f"[green]✔ Stage review → {target}[/green]")
     console.print(Markdown(target.read_text(encoding="utf-8")))
 
@@ -403,11 +370,13 @@ def review_stage_cmd(stage_id: int = typer.Argument(..., help="Stage id, e.g. 0"
 def serve(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8765, "--port", "-p"),
+    reload: bool = typer.Option(False, "--reload", help="Enable uvicorn auto-reload."),
 ):
     """Launch the local web UI on http://127.0.0.1:8765."""
-    import uvicorn
+    from . import server
+
     console.print(f"[cyan]→ Open http://{host}:{port} in your browser[/cyan]")
-    uvicorn.run("rl_agent_tutor.server:app", host=host, port=port, reload=False)
+    server.run(host=host, port=port, reload=reload)
 
 
 # ---------- workspace ----------
