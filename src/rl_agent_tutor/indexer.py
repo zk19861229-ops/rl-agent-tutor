@@ -13,6 +13,7 @@ used at index and query time.
 """
 from __future__ import annotations
 import json
+import os
 import pickle
 import re
 from dataclasses import dataclass, asdict
@@ -234,12 +235,38 @@ def bm25_path() -> Path:
     return workspace_path("library", "index", "bm25.pkl")
 
 
+def _mtime_cache_path() -> Path:
+    return workspace_path("library", "index", "mtime.json")
+
+
+def _load_mtime_cache() -> dict[str, float]:
+    p = _mtime_cache_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_mtime_cache(cache: dict[str, float]) -> None:
+    p = _mtime_cache_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    os.replace(tmp, p)
+
+
 def _save_chunks(all_chunks: list[Chunk]) -> None:
     target = chunks_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8") as f:
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
         for c in all_chunks:
             f.write(json.dumps(asdict(c), ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, target)
 
 
 def load_chunks() -> list[Chunk]:
@@ -259,8 +286,12 @@ def _build_bm25(chunks: list[Chunk]):
     bm25 = BM25Okapi(corpus) if corpus else None
     target = bm25_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("wb") as f:
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    with tmp.open("wb") as f:
         pickle.dump({"bm25": bm25, "ids": [c.chunk_id for c in chunks]}, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, target)
 
 
 def load_bm25():
@@ -276,22 +307,59 @@ def load_bm25():
 # ---------- Public API ----------
 
 def index_papers(papers_dir: Optional[Path] = None,
-                 progress=None) -> tuple[int, int]:
-    """Reindex all PDFs under workspace/library/papers/. Returns (n_pdfs, n_chunks)."""
+                 progress=None,
+                 force: bool = False) -> tuple[int, int, list[tuple[str, str]]]:
+    """Reindex PDFs under workspace/library/papers/.
+
+    Returns (n_pdfs, n_chunks, failures) where failures is a list of
+    (pdf_filename, error_message) for PDFs that couldn't be parsed. The CLI
+    forwards failures to the trajectory so they're not just swallowed by stdout.
+
+    Incremental: PDFs whose mtime hasn't changed since last index reuse cached
+    chunks. Pass force=True to rebuild everything.
+    """
     papers_dir = papers_dir or workspace_path("library", "papers")
     papers_dir.mkdir(parents=True, exist_ok=True)
     pdfs = sorted(papers_dir.glob("*.pdf"))
+
+    mtime_cache = {} if force else _load_mtime_cache()
+    cached_chunks = [] if force else load_chunks()
+    chunks_by_doc: dict[str, list[Chunk]] = {}
+    for c in cached_chunks:
+        chunks_by_doc.setdefault(c.doc_id, []).append(c)
+
+    new_cache: dict[str, float] = {}
     all_chunks: list[Chunk] = []
+    current_doc_ids: set[str] = set()
+    failures: list[tuple[str, str]] = []
+
     for pdf in pdfs:
+        doc_id = pdf.stem
+        current_doc_ids.add(doc_id)
+        mtime = pdf.stat().st_mtime
+        new_cache[doc_id] = mtime
+        if (not force
+                and mtime_cache.get(doc_id) == mtime
+                and doc_id in chunks_by_doc):
+            all_chunks.extend(chunks_by_doc[doc_id])
+            continue
         if progress:
             progress(pdf.name)
         try:
             all_chunks.extend(chunk_pdf(pdf))
         except Exception as e:
-            print(f"[indexer] failed on {pdf.name}: {e}")
+            err = f"{type(e).__name__}: {e}"
+            print(f"[indexer] failed on {pdf.name}: {err}")
+            failures.append((pdf.name, err))
+            # keep stale chunks if rechunk failed, so users don't lose hits
+            if doc_id in chunks_by_doc:
+                all_chunks.extend(chunks_by_doc[doc_id])
+                new_cache[doc_id] = mtime_cache.get(doc_id, 0)
+
     _save_chunks(all_chunks)
     _build_bm25(all_chunks)
-    return len(pdfs), len(all_chunks)
+    _save_mtime_cache(new_cache)
+    return len(pdfs), len(all_chunks), failures
 
 
 def index_stats() -> dict:

@@ -179,7 +179,7 @@ def test_indexer_optional():
     if not papers:
         print(f"\n    {YELLOW}skipped — no PDFs available{END}")
         return None
-    n_pdfs, n_chunks = indexer.index_papers()
+    n_pdfs, n_chunks, _failures = indexer.index_papers()
     assert_truthy(n_chunks > 0, "no chunks produced")
     print(f"\n    indexed {n_pdfs} PDFs → {n_chunks} chunks")
     return n_pdfs, n_chunks

@@ -24,6 +24,7 @@ from .llm import chat
 from .models import LearningNode, Resource
 from .store import load_resources
 from .config import workspace_path
+from .utils import slugify
 
 
 _MAX_PER_RESOURCE = 4000   # chars of content per resource fed to the LLM
@@ -106,8 +107,7 @@ def _extract(r: Resource) -> Optional[str]:
 
 
 def _slugify(s: str, n: int = 60) -> str:
-    s = re.sub(r"[^a-zA-Z0-9_-]+", "_", s).strip("_")
-    return s[:n].lower() or "node"
+    return slugify(s, n=n, lower=True) or "node"
 
 
 # ---------- LLM synthesis ----------

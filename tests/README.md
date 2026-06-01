@@ -1,5 +1,17 @@
 # 集成测试与验收
 
+## 单元测试 (无 LLM, 无网络, 秒级)
+
+跑纯逻辑层测试，验证 slugify / 原子写 / repo 校验 / SSRF 拦截 /
+状态机归一化 / mtime 缓存等边界:
+
+```bash
+cd rl-agent-tutor
+python tests/test_units.py
+```
+
+零 API 成本，约 1 秒。CI 应当跑这个，smoke_test 留给手工验证。
+
 ## 自动冒烟测试
 
 跑一遍完整链路,任何一个 Agent 断了都会立刻在哪个 step 报错:

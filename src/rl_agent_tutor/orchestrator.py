@@ -1,12 +1,28 @@
 """Orchestrator — the state machine that drives the learning loop.
 
-States: planning → studying → self_testing → reviewing → advancing → done
-The orchestrator decides what should happen next given current state and recent activity.
+States: planning → studying → self_testing → advancing → done
+
+`reviewing` was specced but never wired up; it is accepted for backwards-compat
+on existing plan.json files but is normalized to `studying` on load.
+`advancing` is a transient state — `mark_node_completed`+`advance_to_next` flips
+it back to `studying` immediately. If we observe a plan resting in `advancing`
+(e.g. user ran `test` then quit before `advance`), `suggest_next_action` calls
+that out explicitly instead of leaving the loop wedged.
 """
 from __future__ import annotations
 from datetime import datetime
-from .models import LearningPlan, PlanState
+from pathlib import Path
+from .config import workspace_path
+from .models import LearningPlan, PlanState, Stage
 from .store import save_plan, load_plan
+
+
+def normalize_state(plan: LearningPlan) -> bool:
+    """Coerce dead/legacy states. Returns True if anything changed."""
+    if plan.state == "reviewing":
+        plan.state = "studying"
+        return True
+    return False
 
 
 def transition(plan: LearningPlan, new_state: PlanState) -> None:
@@ -21,6 +37,24 @@ def mark_node_completed(plan: LearningPlan, node_id: str) -> None:
     n.status = "completed"
     n.completed_at = datetime.now().isoformat()
     save_plan(plan)
+
+
+def stage_just_completed(plan: LearningPlan, node_id: str) -> Stage | None:
+    """If `node_id` was the LAST pending node in its stage, return the stage.
+
+    Used by callers (CLI advance, web /api/advance) to fire the Reviewer
+    stage_review automatically. Returns None if the stage already had a
+    review file on disk, so we don't double-fire.
+    """
+    s = plan.stage_of(node_id)
+    if not s or not s.nodes:
+        return None
+    if not all(n.status == "completed" for n in s.nodes):
+        return None
+    existing = workspace_path("library", "notes", "reviews").glob(f"stage_{s.id}_*.md")
+    if any(existing):
+        return None
+    return s
 
 
 def advance_to_next(plan: LearningPlan) -> str | None:
@@ -39,9 +73,11 @@ def advance_to_next(plan: LearningPlan) -> str | None:
 
 def suggest_next_action(plan: LearningPlan) -> str:
     """Tell the learner what they should do next, based on plan state."""
+    if normalize_state(plan):
+        save_plan(plan)
     cur = plan.find_node(plan.current_node_id) if plan.current_node_id else None
     if plan.state == "done":
-        return "🎉 Plan complete. Run `rl-agent review` to generate a final retrospective, or set a new goal with `rl-agent plan`."
+        return "🎉 Plan complete. Run `rl-agent review-stage` for a per-stage retrospective, or set a new goal with `rl-agent plan`."
     if not cur:
         return "Run `rl-agent plan \"<your goal>\"` to start."
     if plan.state == "studying":
@@ -53,7 +89,16 @@ def suggest_next_action(plan: LearningPlan) -> str:
             f"  → when ready:       rl-agent test"
         )
     if plan.state == "self_testing":
-        return f"You're mid-test on {cur.id}. Run `rl-agent test --resume` or `rl-agent advance` if done."
+        return (
+            f"You're mid-test on {cur.id} {cur.name}.\n"
+            f"  → run a fresh quiz:  rl-agent test\n"
+            f"  → mark complete:     rl-agent advance"
+        )
     if plan.state == "advancing":
-        return "Run `rl-agent advance` to move to the next node."
-    return "(unknown state)"
+        return (
+            f"You passed the test on {cur.id} {cur.name}.\n"
+            f"  → confirm + move on: rl-agent advance\n"
+            f"  → keep studying:     rl-agent ask \"...\"  (state will reset)"
+        )
+    return f"(unknown state: {plan.state})"
+

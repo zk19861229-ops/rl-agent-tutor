@@ -6,7 +6,9 @@ Blog: lightweight HTML → main text extraction using BeautifulSoup heuristics
 YouTube: youtube-transcript-api pulls auto-captions or human-uploaded captions.
 """
 from __future__ import annotations
+import ipaddress
 import re
+import socket
 import urllib.parse
 from pathlib import Path
 from typing import Optional
@@ -16,6 +18,54 @@ from bs4 import BeautifulSoup
 
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 rl-agent-tutor"
+
+
+# ---------- SSRF guard ----------
+
+class UnsafeURLError(ValueError):
+    """Raised when a URL targets a private/loopback/link-local address."""
+
+
+def _is_private_ip(ip: ipaddress._BaseAddress) -> bool:
+    return (ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
+def _check_url_safe(url: str) -> str:
+    """Validate `url` resolves only to public IPs and uses http(s).
+
+    The LLM (Librarian) hands us URLs to fetch. Without this check, a confused
+    or hallucinated URL could pull from `http://localhost`, `http://10.0.0.1`,
+    or even `file://` / `gopher://`. Returns the (parsed) URL or raises
+    UnsafeURLError.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise UnsafeURLError(f"unsupported scheme: {parsed.scheme!r}")
+    host = parsed.hostname
+    if not host:
+        raise UnsafeURLError("missing host")
+    # If the host already is an IP literal, validate directly. Otherwise resolve.
+    try:
+        ip = ipaddress.ip_address(host)
+        if _is_private_ip(ip):
+            raise UnsafeURLError(f"refusing to fetch from {ip}")
+        return url
+    except ValueError:
+        pass  # not an IP literal — fall through to DNS lookup
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as e:
+        raise UnsafeURLError(f"DNS lookup failed for {host}: {e}")
+    for info in infos:
+        sockaddr = info[4]
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            continue
+        if _is_private_ip(ip):
+            raise UnsafeURLError(f"refusing to fetch {host} → {ip}")
+    return url
 
 
 # ---------- Blog ----------
@@ -40,10 +90,30 @@ def _pick_main(soup: BeautifulSoup) -> str:
 def fetch_blog(url: str) -> dict:
     """Return {'title':..., 'text':..., 'url':...} for a blog/article URL."""
     try:
-        with httpx.Client(headers={"User-Agent": UA}, timeout=30.0, follow_redirects=True) as c:
-            resp = c.get(url)
-            resp.raise_for_status()
-            html = resp.text
+        _check_url_safe(url)
+    except UnsafeURLError as e:
+        return {"title": "", "text": "", "url": url, "error": f"unsafe URL: {e}"}
+    try:
+        with httpx.Client(headers={"User-Agent": UA}, timeout=30.0, follow_redirects=False) as c:
+            # Manual redirect handling so we can re-validate each hop.
+            current = url
+            for _ in range(5):
+                resp = c.get(current)
+                if resp.is_redirect:
+                    nxt = resp.headers.get("location", "")
+                    if not nxt:
+                        return {"title": "", "text": "", "url": url, "error": "empty redirect"}
+                    nxt = urllib.parse.urljoin(current, nxt)
+                    _check_url_safe(nxt)
+                    current = nxt
+                    continue
+                resp.raise_for_status()
+                html = resp.text
+                break
+            else:
+                return {"title": "", "text": "", "url": url, "error": "too many redirects"}
+    except UnsafeURLError as e:
+        return {"title": "", "text": "", "url": url, "error": f"unsafe redirect: {e}"}
     except Exception as e:
         return {"title": "", "text": "", "url": url, "error": str(e)}
 
@@ -138,13 +208,30 @@ def fetch_youtube_transcript(url_or_id: str, languages: tuple[str, ...] = ("en",
     except Exception as e:
         return {"error": f"fetch failed: {e}", "video_id": vid}
 
-    text = "\n".join(seg.get("text", "").strip() for seg in segments if seg.get("text"))
+    text = "\n".join(_seg_text(seg) for seg in segments if _seg_text(seg))
     return {
         "video_id": vid,
         "language": chosen_lang,
         "text": text,
-        "segments": segments,
+        "segments": [_seg_to_dict(s) for s in segments],
         "url": f"https://www.youtube.com/watch?v={vid}",
+    }
+
+
+def _seg_text(seg) -> str:
+    """Pull `text` from either a dict or a youtube-transcript-api dataclass."""
+    if isinstance(seg, dict):
+        return (seg.get("text") or "").strip()
+    return (getattr(seg, "text", "") or "").strip()
+
+
+def _seg_to_dict(seg) -> dict:
+    if isinstance(seg, dict):
+        return seg
+    return {
+        "text": getattr(seg, "text", ""),
+        "start": getattr(seg, "start", None),
+        "duration": getattr(seg, "duration", None),
     }
 
 

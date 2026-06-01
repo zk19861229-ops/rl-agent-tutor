@@ -48,9 +48,8 @@ def ask(node: LearningNode, stage_name: str, question: str,
 
     citations: list[dict] = []
     if use_rag:
-        hits = rag.retrieve(question, top_n=5, rerank=True)
-        if hits:
-            ctx_text, citations = rag.render_context(hits, max_chars=8000)
+        ctx_text, citations, _ = rag.with_rag(question, top_n=5, max_chars=8000)
+        if ctx_text:
             sys += "\n\n## Local library passages\n" + ctx_text
 
     past = load_trajectory(node_id=node.id, limit=history_limit * 2)
