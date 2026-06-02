@@ -34,9 +34,18 @@ OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", "RL Agent Tutor")
 
 # --- Workspace roots ---
 
+def _default_workspaces_root() -> str:
+    # Vercel functions cannot rely on the deployed project directory for writes.
+    # This keeps the app bootable as an ephemeral demo until persistent storage
+    # is moved to an external backend.
+    if os.getenv("VERCEL"):
+        return "/tmp/rl-agent-tutor/workspaces"
+    return "./workspaces"
+
+
 # Root that contains all workspace subdirectories + the .active pointer file.
 WORKSPACES_ROOT = Path(
-    os.getenv("WORKSPACES_ROOT", "./workspaces")
+    os.getenv("WORKSPACES_ROOT", _default_workspaces_root())
 ).expanduser().resolve()
 
 # When this env var is set we honor it directly (legacy single-workspace mode,

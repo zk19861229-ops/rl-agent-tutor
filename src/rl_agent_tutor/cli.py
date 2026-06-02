@@ -14,7 +14,7 @@ from .store import (
     load_exercises,
 )
 from .models import TrajectoryEntry, ExerciseSession
-from . import tutor, examiner, practice, workspaces
+from . import tutor, examiner, practice, workspaces, orchestrator
 from .llm import provider_info
 from .services import knowledge as knowledge_service
 from .services import learning as learning_service
@@ -274,18 +274,10 @@ def advance():
     p, n, s = _require_current_node()
     if not typer.confirm(f"Mark node {n.id} ({n.name}) as completed?", default=True):
         raise typer.Exit()
-<<<<<<< HEAD
     result = learning_service.advance_current_node()
+    completed_stage = orchestrator.stage_just_completed(result.plan, result.completed_node_id)
     if result.next_node_id:
         nxt = result.plan.find_node(result.next_node_id)
-=======
-    orchestrator.mark_node_completed(p, n.id)
-    completed_stage = orchestrator.stage_just_completed(p, n.id)
-    new_id = orchestrator.advance_to_next(p)
-    append_trajectory(TrajectoryEntry(node_id=n.id, kind="advance", content=f"completed; next={new_id}"))
-    if new_id:
-        nxt = p.find_node(new_id)
->>>>>>> 7a32dfb76c7a5c6eac7c4889eefc89b13ba11532
         console.print(f"[green]✔ {n.id} completed.[/green] [cyan]→ Next: {nxt.id} {nxt.name}[/cyan]")
     else:
         console.print("[green]🎉 All nodes complete! Run `rl-agent review` for a final retrospective.[/green]")

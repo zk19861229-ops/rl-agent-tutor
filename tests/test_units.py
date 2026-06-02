@@ -339,7 +339,10 @@ if FAILED:
     print(f"{RED}✗ {len(FAILED)} test(s) failed:{END}")
     for name, msg in FAILED:
         print(f"  - {name}: {msg.splitlines()[0]}")
-    sys.exit(1)
+    if __name__ == "__main__":
+        sys.exit(1)
+    raise AssertionError(f"{len(FAILED)} unit test(s) failed")
 else:
     print(f"{GREEN}✓ all unit tests passed{END}")
-    sys.exit(0)
+    if __name__ == "__main__":
+        sys.exit(0)
