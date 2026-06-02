@@ -961,16 +961,34 @@ async function saveSources(){
 }
 
 async function doPractices(){
+  const n=curNode();
+  startProcess('生成行业实践',[
+    '读取当前学习节点',
+    '调用 Practice Agent 生成行业实践',
+    '记录学习轨迹',
+    '渲染实践内容'
+  ],[
+    {after:8,text:'行业实践会等待模型结合当前节点主题生成建议,通常比课件更快。'},
+    {after:20,text:'仍在等待实践建议,常见卡点是 LLM 响应慢或当前节点主题过宽。'}
+  ]);
   const card=document.getElementById('practiceCard');
   const body=document.getElementById('practiceContent');
   card.style.display='block';
   body.innerHTML='<div class="empty"><span class="spinner"></span> 生成中,通常 10–20 秒...</div>';
   try{
+    setProcessStep(0,'done',n?`${n.id} · ${n.name||''}`:'当前节点已读取');
+    setProcessStep(1,'active','正在请求行业实践接口');
     const r=await api('POST','/api/practices');
+    setProcessStep(2,'done','学习轨迹已由后端记录');
+    setProcessStep(3,'active','正在更新实践内容');
     body.innerHTML=md2html(r.text);
     card.scrollIntoView({behavior:'smooth',block:'nearest'});
+    finishProcess('行业实践已生成,可在当前节点下查看。');
   }
-  catch(e){body.innerHTML='<div class="empty" style="color:var(--danger)">失败: '+escapeHtml(e.message)+'</div>'}
+  catch(e){
+    failProcess(e.message);
+    body.innerHTML='<div class="empty" style="color:var(--danger)">失败: '+escapeHtml(e.message)+'</div>';
+  }
 }
 
 async function doRemediation(){
