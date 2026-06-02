@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 workspace/
+workspaces/
 *.egg-info/
 .venv/
 dist/

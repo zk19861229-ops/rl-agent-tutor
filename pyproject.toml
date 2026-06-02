@@ -40,4 +40,4 @@ packages = ["src/rl_agent_tutor"]
 "src/rl_agent_tutor/web/app.js" = "rl_agent_tutor/web/app.js"
 
 [tool.vercel]
-entrypoint = "rl_agent_tutor.server:app"
+entrypoint = "src.rl_agent_tutor.server:app"
