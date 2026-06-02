@@ -12,6 +12,7 @@ from typing import Optional
 
 from .indexer import load_bm25, load_chunks, tokenize, Chunk
 from .llm import chat_json
+from .config import RERANK_MODEL
 
 
 @dataclass
@@ -83,10 +84,12 @@ def llm_rerank(query: str, hits: list[Hit], top_n: int = 5) -> list[Hit]:
         for h in hits
     )
     try:
+        kwargs = {"model": RERANK_MODEL} if RERANK_MODEL else {}
         out = chat_json(
             RERANK_SYSTEM,
             RERANK_USER_TPL.format(q=query, cands=cands, n=top_n),
             max_tokens=600,
+            **kwargs,
         )
         ranked = out.get("ranked_ids", [])
     except Exception:

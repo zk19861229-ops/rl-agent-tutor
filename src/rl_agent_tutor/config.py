@@ -31,6 +31,23 @@ OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
 OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "https://github.com/local/rl-agent-tutor")
 OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", "RL Agent Tutor")
 
+LLM_REQUEST_TIMEOUT = float(os.getenv("LLM_REQUEST_TIMEOUT", "90"))
+LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "15"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "1"))
+LLM_BACKOFF_BASE = float(os.getenv("LLM_BACKOFF_BASE", "1.5"))
+LLM_MAX_TOKEN_SCALE = float(os.getenv("LLM_MAX_TOKEN_SCALE", "1.0"))
+
+# Optional task-level model overrides. Leave empty to use the provider default.
+PLANNER_MODEL = os.getenv("PLANNER_MODEL", "")
+LIBRARIAN_MODEL = os.getenv("LIBRARIAN_MODEL", "")
+COURSEWARE_MODEL = os.getenv("COURSEWARE_MODEL", "")
+PRACTICE_MODEL = os.getenv("PRACTICE_MODEL", "")
+TUTOR_MODEL = os.getenv("TUTOR_MODEL", "")
+EXAMINER_MODEL = os.getenv("EXAMINER_MODEL", "")
+RERANK_MODEL = os.getenv("RERANK_MODEL", "")
+ARCHIVIST_MODEL = os.getenv("ARCHIVIST_MODEL", "")
+REVIEWER_MODEL = os.getenv("REVIEWER_MODEL", "")
+
 
 # --- Workspace roots ---
 

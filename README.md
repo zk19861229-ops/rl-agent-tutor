@@ -42,6 +42,24 @@ cp .env.example .env
 # 编辑 .env,填入你的 ANTHROPIC_API_KEY
 ```
 
+LLM 生成耗时较长时,可以在 `.env` 里做低延迟配置:
+
+```bash
+# 减少单次等待和重试等待
+LLM_REQUEST_TIMEOUT=60
+LLM_MAX_RETRIES=0
+LLM_MAX_TOKEN_SCALE=0.7
+
+# 如果使用 OpenRouter,可以给高频交互任务指定更快模型
+TUTOR_MODEL=openai/gpt-4o-mini
+PRACTICE_MODEL=openai/gpt-4o-mini
+EXAMINER_MODEL=openai/gpt-4o-mini
+LIBRARIAN_MODEL=openai/gpt-4o-mini
+RERANK_MODEL=openai/gpt-4o-mini
+```
+
+建议保留 `PLANNER_MODEL` / `COURSEWARE_MODEL` 为空或使用强模型,避免计划质量和课件结构下降。
+
 ### 3. 第一次使用
 
 如果想用浏览器界面,先启动 Web UI:

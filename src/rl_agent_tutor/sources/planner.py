@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from ..llm import chat_json
 from ..models import LearningNode
+from ..config import LIBRARIAN_MODEL
 from .registry import SourceRegistry
 
 
@@ -49,4 +50,6 @@ def plan_source_fetches(node: LearningNode, registry: SourceRegistry) -> dict:
         objs=", ".join(node.objectives) or "(none)",
         source_hints=registry.prompt_hints(),
     )
+    if LIBRARIAN_MODEL:
+        return chat_json(LIBRARIAN_SYSTEM, user, model=LIBRARIAN_MODEL, max_tokens=1800)
     return chat_json(LIBRARIAN_SYSTEM, user)

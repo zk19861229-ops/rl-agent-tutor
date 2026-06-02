@@ -33,7 +33,7 @@ from .courseware_renderer import render_markdown
 from .llm import chat, chat_json
 from .models import LearningNode, Resource
 from .store import load_resources
-from .config import workspace_path
+from .config import COURSEWARE_MODEL, workspace_path
 from .utils import slugify
 
 
@@ -363,7 +363,8 @@ def regenerate_section(node: LearningNode, section_id: str, stage_name: str = ""
         section_type=old.type,
         materials=materials,
     )
-    raw = chat_json(SECTION_REGEN_SYSTEM, user, max_tokens=2200)
+    kwargs = {"model": COURSEWARE_MODEL} if COURSEWARE_MODEL else {}
+    raw = chat_json(SECTION_REGEN_SYSTEM, user, max_tokens=1800, **kwargs)
     new_section = CoursewareSection.model_validate(raw)
     courseware.sections[index] = new_section
     return _save_courseware(node, courseware, used)
@@ -403,7 +404,14 @@ def _generate_markdown_courseware(node: LearningNode, stage_name: str, materials
         objs=", ".join(node.objectives) or "(none)",
         materials=materials,
     )
-    return chat(COURSEWARE_SYSTEM, user, max_tokens=4000, temperature=0.3)
+    kwargs = {"model": COURSEWARE_MODEL} if COURSEWARE_MODEL else {}
+    return chat(
+        COURSEWARE_SYSTEM,
+        user,
+        max_tokens=2600,
+        temperature=0.3,
+        **kwargs,
+    )
 
 
 def _generate_structured_courseware(
@@ -421,10 +429,12 @@ def _generate_structured_courseware(
         materials=materials,
     )
     try:
+        kwargs = {"model": COURSEWARE_MODEL} if COURSEWARE_MODEL else {}
         raw = chat_json(
             STRUCTURED_COURSEWARE_SYSTEM,
             user,
-            max_tokens=4500,
+            max_tokens=3200,
+            **kwargs,
         )
         courseware = Courseware.model_validate(raw)
     except Exception:

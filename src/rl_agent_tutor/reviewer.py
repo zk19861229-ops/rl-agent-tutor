@@ -12,7 +12,7 @@ from pathlib import Path
 from .llm import chat
 from .models import LearningPlan
 from .store import load_trajectory, load_exercises
-from .config import workspace_path
+from .config import REVIEWER_MODEL, workspace_path
 
 
 WEEKLY_SYSTEM = """You are a thoughtful learning coach.
@@ -133,7 +133,13 @@ def weekly_review(plan: LearningPlan) -> Path:
         activity=_format_activity(recent),
         scores=_format_scores(recent_exes),
     )
-    md = chat(WEEKLY_SYSTEM, user, max_tokens=4000, temperature=0.3)
+    md = chat(
+        WEEKLY_SYSTEM,
+        user,
+        model=REVIEWER_MODEL or None,
+        max_tokens=2200,
+        temperature=0.3,
+    )
 
     reviews_dir = workspace_path("library", "notes", "reviews")
     reviews_dir.mkdir(parents=True, exist_ok=True)
@@ -161,7 +167,13 @@ def stage_review(plan: LearningPlan, stage_id: int) -> Path:
         activity=_format_activity(stage_entries),
         scores=_format_scores(stage_exes),
     )
-    md = chat(STAGE_SYSTEM, user, max_tokens=6000, temperature=0.3)
+    md = chat(
+        STAGE_SYSTEM,
+        user,
+        model=REVIEWER_MODEL or None,
+        max_tokens=3200,
+        temperature=0.3,
+    )
 
     reviews_dir = workspace_path("library", "notes", "reviews")
     reviews_dir.mkdir(parents=True, exist_ok=True)

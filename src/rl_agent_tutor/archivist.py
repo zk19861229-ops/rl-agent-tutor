@@ -12,7 +12,7 @@ from .models import LearningNode, TrajectoryEntry, ExerciseSession, Resource
 from .store import (
     load_trajectory, load_exercises, load_resources,
 )
-from .config import workspace_path
+from .config import ARCHIVIST_MODEL, workspace_path
 from .utils import slugify
 from . import rag
 
@@ -158,7 +158,13 @@ def archive_node(node: LearningNode, stage_name: str = "", use_rag: bool = True)
         ts=datetime.now().isoformat(timespec="seconds"),
     ) + rag_block
 
-    md = chat(ARCHIVIST_SYSTEM, user, max_tokens=6000, temperature=0.2)
+    md = chat(
+        ARCHIVIST_SYSTEM,
+        user,
+        model=ARCHIVIST_MODEL or None,
+        max_tokens=4200,
+        temperature=0.2,
+    )
 
     notes_dir = workspace_path("library", "notes")
     notes_dir.mkdir(parents=True, exist_ok=True)

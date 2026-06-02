@@ -2,6 +2,7 @@
 from __future__ import annotations
 from .llm import chat_json
 from .models import LearningPlan, Stage, LearningNode
+from .config import PLANNER_MODEL
 
 
 PLANNER_SYSTEM = """You are a senior RL/LLM post-training researcher and learning coach.
@@ -54,7 +55,8 @@ Constraints:
 
 def make_plan(goal: str, level: str = "") -> LearningPlan:
     user = PLANNER_USER_TEMPLATE.format(goal=goal, level=level or "(not specified)")
-    raw = chat_json(PLANNER_SYSTEM, user, max_tokens=6000)
+    kwargs = {"model": PLANNER_MODEL} if PLANNER_MODEL else {}
+    raw = chat_json(PLANNER_SYSTEM, user, max_tokens=4200, **kwargs)
     stages: list[Stage] = []
     for s in raw.get("stages", []):
         nodes = [

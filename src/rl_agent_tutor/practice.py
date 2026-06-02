@@ -2,6 +2,7 @@
 from __future__ import annotations
 from .llm import chat
 from .models import LearningNode
+from .config import PRACTICE_MODEL
 
 
 PRACTICE_SYSTEM = """You are a senior RL/LLM engineer who has shipped models at scale.
@@ -38,5 +39,6 @@ def best_practices(node: LearningNode) -> str:
             name=node.name, desc=node.description,
             objs=", ".join(node.objectives) or "(none)",
         ),
-        max_tokens=3000, temperature=0.4,
+        model=PRACTICE_MODEL or None,
+        max_tokens=1600, temperature=0.4,
     )

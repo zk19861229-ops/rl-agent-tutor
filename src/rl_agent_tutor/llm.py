@@ -11,6 +11,8 @@ from .config import (
     ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, ANTHROPIC_MODEL,
     OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_MODEL,
     OPENROUTER_REFERER, OPENROUTER_TITLE,
+    LLM_REQUEST_TIMEOUT, LLM_CONNECT_TIMEOUT, LLM_MAX_RETRIES,
+    LLM_BACKOFF_BASE, LLM_MAX_TOKEN_SCALE,
 )
 
 
@@ -26,8 +28,8 @@ _HTTPX_RETRY = (
     httpx.ConnectError,
 )
 _ANTHROPIC_RETRY = (APIConnectionError, APITimeoutError, InternalServerError)
-_MAX_RETRIES = 3
-_BACKOFF_BASE = 2.0  # seconds; doubles each retry → 2s, 4s, 8s
+_MAX_RETRIES = max(0, LLM_MAX_RETRIES)
+_BACKOFF_BASE = max(0.1, LLM_BACKOFF_BASE)  # seconds; doubles each retry
 
 
 def _retry(fn, *, label: str, retry_on: tuple, max_retries: int = _MAX_RETRIES):
@@ -51,6 +53,11 @@ _anthropic_client: Optional[Anthropic] = None
 _or_client: Optional[httpx.Client] = None
 
 
+def _scaled_tokens(max_tokens: int) -> int:
+    scale = max(0.2, min(1.5, LLM_MAX_TOKEN_SCALE))
+    return max(256, int(max_tokens * scale))
+
+
 def _get_anthropic() -> Anthropic:
     global _anthropic_client
     if _anthropic_client is None:
@@ -59,8 +66,11 @@ def _get_anthropic() -> Anthropic:
                 "ANTHROPIC_API_KEY not set. Copy .env.example to .env and fill it in, "
                 "or set LLM_PROVIDER=openrouter to use OpenRouter."
             )
-        kwargs = {"api_key": ANTHROPIC_API_KEY, "max_retries": 0,
-                  "timeout": httpx.Timeout(180.0)}  # we do our own retries
+        kwargs = {
+            "api_key": ANTHROPIC_API_KEY,
+            "max_retries": 0,
+            "timeout": httpx.Timeout(LLM_REQUEST_TIMEOUT, connect=LLM_CONNECT_TIMEOUT),
+        }  # we do our own retries
         if ANTHROPIC_BASE_URL:
             kwargs["base_url"] = ANTHROPIC_BASE_URL
         _anthropic_client = Anthropic(**kwargs)
@@ -83,7 +93,7 @@ def _get_openrouter() -> httpx.Client:
                 "X-Title": OPENROUTER_TITLE,
                 "Content-Type": "application/json",
             },
-            timeout=httpx.Timeout(180.0, connect=30.0),
+            timeout=httpx.Timeout(LLM_REQUEST_TIMEOUT, connect=LLM_CONNECT_TIMEOUT),
         )
     return _or_client
 
@@ -159,6 +169,7 @@ def _openrouter_chat(system: str, messages: list[dict], *, model: str,
 def _dispatch(system: str, messages: list[dict], *, model: Optional[str],
               max_tokens: int, temperature: float) -> str:
     m = _resolve_model(model)
+    max_tokens = _scaled_tokens(max_tokens)
     if LLM_PROVIDER == "openrouter":
         return _openrouter_chat(system, messages, model=m,
                                 max_tokens=max_tokens, temperature=temperature)
@@ -212,7 +223,8 @@ def _escape_control_chars_in_strings(raw: str) -> str:
     return "".join(out)
 
 
-def chat_json(system: str, user: str, *, max_tokens: int = 4096,
+def chat_json(system: str, user: str, *, model: Optional[str] = None,
+              max_tokens: int = 4096,
               max_attempts: int = 3) -> dict:
     """Chat that expects JSON output.
     Robust to fences, stray prose, unescaped control chars, AND truncated responses.
@@ -229,7 +241,7 @@ def chat_json(system: str, user: str, *, max_tokens: int = 4096,
     for attempt in range(1, max_attempts + 1):
         # raise max_tokens slightly on retry so truncation is less likely
         bonus = (attempt - 1) * 1024
-        raw = chat(sys, user, max_tokens=max_tokens + bonus, temperature=0.2)
+        raw = chat(sys, user, model=model, max_tokens=max_tokens + bonus, temperature=0.2)
         last_raw = raw
         candidate = raw
         m = re.search(r"```(?:json)?\s*(.*?)```", candidate, re.DOTALL)
@@ -262,10 +274,11 @@ def chat_json(system: str, user: str, *, max_tokens: int = 4096,
     )
 
 
-def chat_multi(system: str, messages: list[dict], *, max_tokens: int = 4096,
+def chat_multi(system: str, messages: list[dict], *, model: Optional[str] = None,
+               max_tokens: int = 4096,
                temperature: float = 0.4) -> str:
     """Multi-turn chat. messages = [{role: 'user'|'assistant', content: '...'}]."""
-    return _dispatch(system, messages, model=None,
+    return _dispatch(system, messages, model=model,
                      max_tokens=max_tokens, temperature=temperature)
 
 

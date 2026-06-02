@@ -9,6 +9,7 @@ from .llm import chat_multi
 from .models import LearningNode
 from .store import load_trajectory
 from . import rag
+from .config import TUTOR_MODEL
 
 
 TUTOR_SYSTEM_TPL = """You are a private RL/LLM-post-training tutor for one specific learner.
@@ -73,5 +74,5 @@ def ask(node: LearningNode, stage_name: str, question: str,
             msgs.append({"role": "assistant", "content": e.content})
     msgs.append({"role": "user", "content": question})
 
-    answer = chat_multi(sys, msgs, max_tokens=2000, temperature=0.4)
+    answer = chat_multi(sys, msgs, model=TUTOR_MODEL or None, max_tokens=1400, temperature=0.4)
     return answer, citations

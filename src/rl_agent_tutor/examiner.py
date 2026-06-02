@@ -7,6 +7,7 @@ from __future__ import annotations
 from .llm import chat_json
 from .models import LearningNode, ExerciseQuestion, ExerciseAttempt
 from . import rag
+from .config import EXAMINER_MODEL
 
 
 EXAMINER_GEN_SYSTEM = """You write rigorous self-test questions for an RL/LLM learner.
@@ -83,20 +84,22 @@ def generate_exercises(node: LearningNode, use_rag: bool = True) -> list[Exercis
         if ctx:
             rag_block = "## Local library excerpts\n" + ctx
 
+    kwargs = {"model": EXAMINER_MODEL} if EXAMINER_MODEL else {}
     raw = chat_json(EXAMINER_GEN_SYSTEM, EXAMINER_GEN_USER_TPL.format(
         nid=node.id, name=node.name, desc=node.description,
         objs=", ".join(node.objectives) or "(none)",
         rag_block=rag_block,
-    ), max_tokens=4000)
+    ), max_tokens=2800, **kwargs)
     return [ExerciseQuestion(**q) for q in raw.get("questions", [])]
 
 
 def grade_answer(q: ExerciseQuestion, answer: str) -> ExerciseAttempt:
+    kwargs = {"model": EXAMINER_MODEL} if EXAMINER_MODEL else {}
     raw = chat_json(EXAMINER_GRADE_SYSTEM, EXAMINER_GRADE_USER.format(
         type=q.type, q=q.question,
         points="\n".join(f"- {p}" for p in q.expected_points),
         a=answer or "(no answer provided)",
-    ), max_tokens=1500)
+    ), max_tokens=900, **kwargs)
     score = float(raw.get("score", 0.0))
     score = max(0.0, min(1.0, score))
     return ExerciseAttempt(qid=q.qid, answer=answer, score=score, feedback=raw.get("feedback", ""))
