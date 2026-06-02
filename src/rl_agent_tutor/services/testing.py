@@ -7,7 +7,9 @@ from datetime import datetime
 from .. import examiner
 from ..models import ExerciseAttempt, ExerciseQuestion, ExerciseSession, TrajectoryEntry
 from ..store import append_exercise, append_trajectory, save_plan
+from . import evidence
 from . import learning
+from . import weakness
 
 
 @dataclass(frozen=True)
@@ -16,6 +18,7 @@ class TestSessionResult:
     overall_score: float
     summary: str
     plan_state: str
+    weak_areas: list[dict]
 
 
 def mark_self_testing() -> None:
@@ -28,6 +31,7 @@ def mark_self_testing() -> None:
 def submit_session(session: ExerciseSession) -> TestSessionResult:
     """Finalize and persist an exercise session, then update plan state."""
     avg, summary = examiner.summarize_session(session.attempts)
+    weak_areas = weakness.extract_weak_areas(session.attempts)
     session.overall_score = avg
     session.finished_at = session.finished_at or datetime.now().isoformat()
     append_exercise(session)
@@ -36,19 +40,25 @@ def submit_session(session: ExerciseSession) -> TestSessionResult:
             node_id=session.node_id,
             kind="test",
             content=summary,
-            meta={"score": avg},
+            meta={"score": avg, "weak_areas": weak_areas},
         )
     )
 
     plan = learning.require_plan()
     plan.state = "advancing" if avg >= 0.8 else "studying"
     save_plan(plan)
+    evidence.mark_node_resources(
+        session.node_id,
+        status="tested",
+        used_by=f"test:{session.finished_at}",
+    )
 
     return TestSessionResult(
         session=session,
         overall_score=avg,
         summary=summary,
         plan_state=plan.state,
+        weak_areas=weak_areas,
     )
 
 

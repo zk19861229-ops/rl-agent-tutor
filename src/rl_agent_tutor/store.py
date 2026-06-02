@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 from .config import workspace_path, ensure_workspace
 from .models import LearningPlan, TrajectoryEntry, Resource, ExerciseSession
+from .storage import get_text_storage
 
 try:
     import fcntl  # POSIX only
@@ -42,15 +43,16 @@ def exercises_path() -> Path:
     return workspace_path("progress", "exercises.jsonl")
 
 
+def _key(path: Path) -> str:
+    try:
+        return path.relative_to(workspace_path()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     """Write `text` to `path` atomically: tmp file in same dir, fsync, rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    get_text_storage().write_text(_key(path), text)
 
 
 @contextmanager
@@ -86,15 +88,15 @@ def save_plan(plan: LearningPlan) -> None:
 
 def load_plan() -> Optional[LearningPlan]:
     p = plan_path()
-    if not p.exists():
+    storage = get_text_storage()
+    if not storage.exists(_key(p)):
         return None
-    return LearningPlan.model_validate_json(p.read_text(encoding="utf-8"))
+    return LearningPlan.model_validate_json(storage.read_text(_key(p)))
 
 
 def append_trajectory(entry: TrajectoryEntry) -> None:
     ensure_workspace()
-    with _locked_append(traj_path()) as f:
-        f.write(entry.model_dump_json() + "\n")
+    get_text_storage().append_text(_key(traj_path()), entry.model_dump_json() + "\n")
 
 
 def _tail_lines(path: Path, max_lines: int, block_size: int = 8192) -> list[str]:
@@ -133,12 +135,18 @@ def _tail_lines(path: Path, max_lines: int, block_size: int = 8192) -> list[str]
 
 def load_trajectory(node_id: Optional[str] = None, limit: int = 50) -> list[TrajectoryEntry]:
     p = traj_path()
-    if not p.exists():
+    storage = get_text_storage()
+    if not storage.exists(_key(p)):
         return []
     # Without a node filter we can stop after `limit` lines; with a filter we
     # have to scan further because matches may be sparse. Cap the scan at
     # 20×limit lines from the tail — good enough for a single-user tool.
-    raw_lines = _tail_lines(p, max_lines=limit if not node_id else limit * 20)
+    text = storage.read_text(_key(p))
+    raw_lines = [line for line in text.splitlines() if line.strip()]
+    if not node_id:
+        raw_lines = raw_lines[-limit:]
+    else:
+        raw_lines = raw_lines[-limit * 20:]
     entries: list[TrajectoryEntry] = []
     for line in raw_lines:
         if not line.strip():
@@ -155,16 +163,24 @@ def load_trajectory(node_id: Optional[str] = None, limit: int = 50) -> list[Traj
 
 def append_resource(r: Resource) -> None:
     ensure_workspace()
-    with _locked_append(resources_path()) as f:
-        f.write(r.model_dump_json() + "\n")
+    get_text_storage().append_text(_key(resources_path()), r.model_dump_json() + "\n")
+
+
+def save_resources(resources: list[Resource]) -> None:
+    ensure_workspace()
+    text = "\n".join(r.model_dump_json() for r in resources)
+    if text:
+        text += "\n"
+    _atomic_write_text(resources_path(), text)
 
 
 def load_resources(node_id: Optional[str] = None) -> list[Resource]:
     p = resources_path()
-    if not p.exists():
+    storage = get_text_storage()
+    if not storage.exists(_key(p)):
         return []
     out = []
-    for line in p.read_text(encoding="utf-8").splitlines():
+    for line in storage.read_text(_key(p)).splitlines():
         if not line.strip():
             continue
         r = Resource.model_validate_json(line)
@@ -176,16 +192,16 @@ def load_resources(node_id: Optional[str] = None) -> list[Resource]:
 
 def append_exercise(s: ExerciseSession) -> None:
     ensure_workspace()
-    with _locked_append(exercises_path()) as f:
-        f.write(s.model_dump_json() + "\n")
+    get_text_storage().append_text(_key(exercises_path()), s.model_dump_json() + "\n")
 
 
 def load_exercises(node_id: Optional[str] = None) -> list[ExerciseSession]:
     p = exercises_path()
-    if not p.exists():
+    storage = get_text_storage()
+    if not storage.exists(_key(p)):
         return []
     out = []
-    for line in p.read_text(encoding="utf-8").splitlines():
+    for line in storage.read_text(_key(p)).splitlines():
         if not line.strip():
             continue
         s = ExerciseSession.model_validate_json(line)

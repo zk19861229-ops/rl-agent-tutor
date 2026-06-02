@@ -20,7 +20,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .llm import chat
+from .courseware_schema import (
+    Courseware,
+    CoursewareReference,
+    CoursewareSection,
+    markdown_to_courseware,
+    render_courseware_markdown,
+)
+from .courseware_extractor import build_materials_block, extract_media_blocks
+from .courseware_generator import attach_media_blocks
+from .courseware_renderer import render_markdown
+from .llm import chat, chat_json
 from .models import LearningNode, Resource
 from .store import load_resources
 from .config import workspace_path
@@ -167,9 +177,108 @@ and answer each before moving on.
 Output the markdown only. No preface, no closing remarks.
 """
 
+STRUCTURED_COURSEWARE_SYSTEM = """You create structured courseware JSON for a technical learner.
+Return compact valid JSON only. The content must teach, not merely summarize.
+
+LANGUAGE: write Chinese text. Keep technical terms, code identifiers, paper titles,
+library names, and formulas in English when appropriate.
+
+Use varied block types when useful:
+- paragraph for concise explanation
+- callout for key warnings or misconceptions
+- formula for math
+- code for minimal runnable snippets
+- table for comparisons
+- diagram with Mermaid code for mechanisms or workflows
+- video for YouTube resources with suggested segments
+- quiz for checkpoint questions
+"""
+
+STRUCTURED_COURSEWARE_USER_TPL = """Learning node:
+- ID: {nid}
+- Stage: {stage}
+- Name: {name}
+- Description: {desc}
+- Objectives: {objs}
+
+Source materials:
+{materials}
+
+Return EXACTLY this JSON shape:
+{{
+  "node_id": "{nid}",
+  "title": "...",
+  "learning_objectives": ["...", "..."],
+  "sections": [
+    {{
+      "id": "overview",
+      "title": "本节要解决的问题",
+      "type": "concept",
+      "blocks": [
+        {{"type": "paragraph", "title": "", "content": {{"text": "..."}}}},
+        {{"type": "diagram", "title": "机制图", "content": {{"format": "mermaid", "code": "flowchart LR\\nA-->B", "caption": "..."}}}},
+        {{"type": "video", "title": "视频片段", "content": {{"url": "https://www.youtube.com/watch?v=...", "summary": "...", "segments": [
+          {{"start_seconds": 120, "end_seconds": 360, "title": "...", "why_watch": "...", "checkpoint_question": "..."}}
+        ]}}}},
+        {{"type": "quiz", "title": "检查点", "content": {{"questions": ["..."]}}}}
+      ]
+    }}
+  ],
+  "key_takeaways": ["...", "..."],
+  "references": [
+    {{"title": "...", "source_id": "...", "url": null, "local_path": null}}
+  ]
+}}
+
+Rules:
+- 4 to 7 sections.
+- Include at least one table OR diagram when the topic has relationships or workflow.
+- Include at least one quiz block.
+- If a source is video/transcript, include a video block with url, summary, and 1-3 segments when possible.
+- Mermaid diagrams should use simple flowchart/state/sequence syntax and include a caption.
+- Keep total content under 1800 Chinese characters.
+JSON only."""
+
+SECTION_REGEN_SYSTEM = """You regenerate one section of structured technical courseware.
+Return valid compact JSON for a single CoursewareSection only. Keep Chinese text concise,
+use varied blocks, and preserve the requested section id.
+"""
+
+SECTION_REGEN_USER_TPL = """Learning node:
+- ID: {nid}
+- Stage: {stage}
+- Name: {name}
+- Description: {desc}
+- Objectives: {objs}
+
+Regenerate this section:
+- section_id: {section_id}
+- title: {title}
+- type: {section_type}
+
+Source materials:
+{materials}
+
+Return exactly:
+{{
+  "id": "{section_id}",
+  "title": "...",
+  "type": "{section_type}",
+  "blocks": [
+    {{"type": "paragraph", "title": "", "content": {{"text": "..."}}}},
+    {{"type": "quiz", "title": "检查点", "content": {{"questions": ["..."]}}}}
+  ]
+}}
+JSON only."""
+
 
 def _build_materials_block(node: LearningNode) -> tuple[str, list[Resource]]:
     """Collect extracts from all usable resources. Returns (block_text, used_resources)."""
+    return build_materials_block(node)
+
+
+def _legacy_build_materials_block(node: LearningNode) -> tuple[str, list[Resource]]:
+    """Previous inline extractor kept for compatibility with tests/imports."""
     resources = load_resources(node_id=node.id)
     used: list[Resource] = []
     parts: list[str] = []
@@ -199,49 +308,166 @@ def generate_courseware(node: LearningNode, stage_name: str = "") -> dict:
     """Build courseware for a node. Saves to disk and returns dict with markdown + meta."""
     materials, used = _build_materials_block(node)
 
-    user = COURSEWARE_USER_TPL.format(
-        nid=node.id, stage=stage_name or "(unknown)",
-        name=node.name, desc=node.description,
-        objs=", ".join(node.objectives) or "(none)",
-        materials=materials,
-    )
-
-    md = chat(COURSEWARE_SYSTEM, user, max_tokens=4000, temperature=0.3)
+    courseware = _generate_structured_courseware(node, stage_name, materials, used)
+    if courseware is None:
+        md = _generate_markdown_courseware(node, stage_name, materials)
+        courseware = markdown_to_courseware(node.id, node.name, md)
+    else:
+        courseware = attach_media_blocks(courseware, extract_media_blocks(node, used))
+        md = render_markdown(courseware)
 
     out_dir = workspace_path("library", "notes", "courseware")
     out_dir.mkdir(parents=True, exist_ok=True)
-    fname = f"{node.id}_{_slugify(node.name)}.md"
-    target = out_dir / fname
+    stem = f"{node.id}_{_slugify(node.name)}"
+    md_target = out_dir / f"{stem}.md"
+    json_target = out_dir / f"{stem}.json"
 
     header = (
         f"<!-- courseware for node {node.id} {node.name} -->\n"
         f"<!-- generated {datetime.now().isoformat(timespec='seconds')} -->\n"
         f"<!-- sources used: {len(used)} -->\n\n"
     )
-    target.write_text(header + md, encoding="utf-8")
+    md_target.write_text(header + md, encoding="utf-8")
+    json_target.write_text(courseware.model_dump_json(indent=2), encoding="utf-8")
 
     return {
         "node_id": node.id,
         "markdown": md,
-        "path": str(target),
+        "courseware": courseware.model_dump(),
+        "path": str(md_target),
+        "json_path": str(json_target),
         "sources_used": len(used),
         "sources_total": len(load_resources(node_id=node.id)),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
 
 
+def regenerate_section(node: LearningNode, section_id: str, stage_name: str = "") -> dict:
+    cached = load_courseware(node)
+    if not cached or not cached.get("courseware"):
+        raise ValueError("courseware not found")
+    courseware = Courseware.model_validate(cached["courseware"])
+    index = next((i for i, section in enumerate(courseware.sections) if section.id == section_id), -1)
+    if index < 0:
+        raise ValueError(f"section {section_id} not found")
+    old = courseware.sections[index]
+    materials, used = _build_materials_block(node)
+    user = SECTION_REGEN_USER_TPL.format(
+        nid=node.id,
+        stage=stage_name or "(unknown)",
+        name=node.name,
+        desc=node.description,
+        objs=", ".join(node.objectives) or "(none)",
+        section_id=old.id,
+        title=old.title,
+        section_type=old.type,
+        materials=materials,
+    )
+    raw = chat_json(SECTION_REGEN_SYSTEM, user, max_tokens=2200)
+    new_section = CoursewareSection.model_validate(raw)
+    courseware.sections[index] = new_section
+    return _save_courseware(node, courseware, used)
+
+
+def _save_courseware(node: LearningNode, courseware: Courseware, used: list[Resource] | None = None) -> dict:
+    used = used or []
+    md = render_markdown(courseware)
+    out_dir = workspace_path("library", "notes", "courseware")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"{node.id}_{_slugify(node.name)}"
+    md_target = out_dir / f"{stem}.md"
+    json_target = out_dir / f"{stem}.json"
+    header = (
+        f"<!-- courseware for node {node.id} {node.name} -->\n"
+        f"<!-- generated {datetime.now().isoformat(timespec='seconds')} -->\n"
+        f"<!-- sources used: {len(used)} -->\n\n"
+    )
+    md_target.write_text(header + md, encoding="utf-8")
+    json_target.write_text(courseware.model_dump_json(indent=2), encoding="utf-8")
+    return {
+        "node_id": node.id,
+        "markdown": md,
+        "courseware": courseware.model_dump(),
+        "path": str(md_target),
+        "json_path": str(json_target),
+        "sources_used": len(used),
+        "sources_total": len(load_resources(node_id=node.id)),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def _generate_markdown_courseware(node: LearningNode, stage_name: str, materials: str) -> str:
+    user = COURSEWARE_USER_TPL.format(
+        nid=node.id, stage=stage_name or "(unknown)",
+        name=node.name, desc=node.description,
+        objs=", ".join(node.objectives) or "(none)",
+        materials=materials,
+    )
+    return chat(COURSEWARE_SYSTEM, user, max_tokens=4000, temperature=0.3)
+
+
+def _generate_structured_courseware(
+    node: LearningNode,
+    stage_name: str,
+    materials: str,
+    used: list[Resource],
+) -> Courseware | None:
+    user = STRUCTURED_COURSEWARE_USER_TPL.format(
+        nid=node.id,
+        stage=stage_name or "(unknown)",
+        name=node.name,
+        desc=node.description,
+        objs=", ".join(node.objectives) or "(none)",
+        materials=materials,
+    )
+    try:
+        raw = chat_json(
+            STRUCTURED_COURSEWARE_SYSTEM,
+            user,
+            max_tokens=4500,
+        )
+        courseware = Courseware.model_validate(raw)
+    except Exception:
+        return None
+
+    if not courseware.references and used:
+        courseware.references.extend(
+            CoursewareReference(
+                title=r.title,
+                source_id=r.source_id or r.kind,
+                url=r.url,
+                local_path=r.local_path,
+            )
+            for r in used[:8]
+        )
+    return courseware
+
+
 def load_courseware(node: LearningNode) -> Optional[dict]:
     """Return the cached courseware for a node, or None."""
-    target = workspace_path("library", "notes", "courseware",
-                            f"{node.id}_{_slugify(node.name)}.md")
-    if not target.exists():
+    stem = f"{node.id}_{_slugify(node.name)}"
+    md_target = workspace_path("library", "notes", "courseware", f"{stem}.md")
+    json_target = workspace_path("library", "notes", "courseware", f"{stem}.json")
+    if not md_target.exists() and not json_target.exists():
         return None
-    text = target.read_text(encoding="utf-8")
-    # strip our HTML comment header
-    body = re.sub(r"^(?:<!--[^>]*-->\s*)+", "", text)
+    courseware = None
+    if json_target.exists():
+        try:
+            courseware = Courseware.model_validate_json(json_target.read_text(encoding="utf-8"))
+        except Exception:
+            courseware = None
+    if md_target.exists():
+        text = md_target.read_text(encoding="utf-8")
+        body = re.sub(r"^(?:<!--[^>]*-->\s*)+", "", text)
+    elif courseware is not None:
+        body = render_courseware_markdown(courseware)
+    else:
+        return None
     return {
         "node_id": node.id,
         "markdown": body,
-        "path": str(target),
+        "courseware": courseware.model_dump() if courseware else None,
+        "path": str(md_target),
+        "json_path": str(json_target) if json_target.exists() else None,
         "cached": True,
     }

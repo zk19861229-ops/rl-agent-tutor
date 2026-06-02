@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import APIRouter
 
 from ..llm import provider_info
+from ..services import dashboard as dashboard_service
 from ..store import load_exercises, load_plan, load_trajectory
 
 
@@ -56,4 +57,5 @@ def get_stats():
         "current_node_id": plan.current_node_id,
         "state": plan.state,
         "provider": provider_info(),
+        "dashboard": dashboard_service.build_mastery_dashboard(plan),
     }

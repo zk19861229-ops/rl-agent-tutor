@@ -32,7 +32,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config
+from . import config, deployment, storage
 from . import workspaces as ws_mod
 from .llm import provider_info
 from .routes.dashboard import router as dashboard_router
@@ -99,6 +99,14 @@ def create_app() -> FastAPI:
             "ok": True,
             "provider": provider_info(),
             "workspace": active.name if active else None,
+            "deployment": deployment.profile().to_dict(),
+        }
+
+    @application.get("/api/deployment")
+    def deployment_status():
+        return {
+            "deployment": deployment.profile().to_dict(),
+            "storage": storage.storage_status(),
         }
 
     @application.get("/", response_class=HTMLResponse)

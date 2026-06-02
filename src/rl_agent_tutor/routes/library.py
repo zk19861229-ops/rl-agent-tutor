@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import indexer, rag
+from ..services import evidence as evidence_service
 from ..services import learning as learning_service
 from ..services import resources as resources_service
 
@@ -18,6 +19,10 @@ class QueryReq(BaseModel):
     query: str
     top_n: int = 5
     rerank: bool = True
+
+
+class SourcesReq(BaseModel):
+    sources: list[dict]
 
 
 @router.post("/api/index")
@@ -68,4 +73,21 @@ async def post_fetch():
 
 @router.get("/api/resources/{node_id}")
 def get_resources(node_id: str):
-    return {"resources": [r.model_dump() for r in resources_service.list_node_resources(node_id)]}
+    return {
+        "resources": [r.model_dump() for r in resources_service.list_node_resources(node_id)],
+        "evidence": evidence_service.summarize_node(node_id).to_dict(),
+    }
+
+
+@router.get("/api/sources")
+def get_sources():
+    return {"sources": resources_service.list_sources()}
+
+
+@router.put("/api/sources")
+def put_sources(req: SourcesReq):
+    try:
+        sources = resources_service.save_sources_from_payload(req.sources)
+    except Exception as exc:
+        raise HTTPException(400, f"invalid sources: {exc}")
+    return {"sources": sources}

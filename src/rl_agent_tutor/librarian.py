@@ -16,47 +16,15 @@ import subprocess
 from pathlib import Path
 import arxiv
 import httpx
-from .llm import chat_json
 from .models import LearningNode, Resource
-from .config import workspace_path
-from .store import append_resource
+from .sources import SourceRegistry, load_source_registry
+from .sources.pipeline import run_source_providers
+from .sources.planner import plan_source_fetches
 from .utils import slugify
 from .fetchers import (
     fetch_blog, save_blog_md,
     fetch_youtube_transcript, save_youtube_md, youtube_id,
 )
-
-
-LIBRARIAN_SYSTEM = """You are a research librarian for RL/LLM topics.
-For a given learning node, suggest the best resources to fetch from each source.
-Be specific: actual paper titles, real arxiv search terms, real GitHub repos, real blog URLs, real YouTube video IDs/URLs.
-Only suggest things you are confident exist. If you are not sure, omit it rather than guess.
-"""
-
-LIBRARIAN_USER = """Learning node:
-- ID: {nid}
-- Name: {name}
-- Description: {desc}
-- Objectives: {objs}
-
-Field guide:
-- arxiv_queries: 2-4 specific arxiv queries (paper titles or "author year topic")
-- github_repos: 1-2 high-quality "owner/repo" identifiers
-- blog_urls: 1-3 high-signal blog/article URLs, each {{"url": "...", "why": "<one line>"}}
-- youtube_videos: 0-2 lecture/talk videos, each {{"url_or_id": "...", "title": "...", "why": "..."}}
-
-Return EXACTLY this JSON shape (no comments, no trailing commas):
-{{
-  "arxiv_queries": ["...", "..."],
-  "github_repos": ["owner/repo"],
-  "blog_urls": [
-    {{"url": "https://...", "why": "..."}}
-  ],
-  "youtube_videos": [
-    {{"url_or_id": "https://youtube.com/watch?v=... or 11-char id", "title": "...", "why": "..."}}
-  ]
-}}
-Output JSON only."""
 
 
 def _slugify(s: str, n: int = 60) -> str:
@@ -227,52 +195,7 @@ def fetch_youtube_resource(url_or_id: str, title: str, why: str,
 
 # ---------- main entry ----------
 
-def fetch_for_node(node: LearningNode) -> list[Resource]:
-    user = LIBRARIAN_USER.format(
-        nid=node.id, name=node.name, desc=node.description,
-        objs=", ".join(node.objectives) or "(none)",
-    )
-    plan_json = chat_json(LIBRARIAN_SYSTEM, user)
-
-    papers_dir = workspace_path("library", "papers")
-    code_dir = workspace_path("library", "code")
-    blogs_dir = workspace_path("library", "notes", "blogs")
-    transcripts_dir = workspace_path("library", "notes", "transcripts")
-    for d in (papers_dir, code_dir, blogs_dir, transcripts_dir):
-        d.mkdir(parents=True, exist_ok=True)
-
-    out: list[Resource] = []
-
-    for q in plan_json.get("arxiv_queries", [])[:4]:
-        r = fetch_arxiv_paper(q, node.id, papers_dir)
-        if r:
-            append_resource(r); out.append(r)
-
-    for repo in plan_json.get("github_repos", [])[:2]:
-        r = clone_github_repo(repo, node.id, code_dir)
-        if r:
-            append_resource(r); out.append(r)
-
-    for item in plan_json.get("blog_urls", [])[:3]:
-        url = item.get("url") if isinstance(item, dict) else item
-        why = item.get("why", "") if isinstance(item, dict) else ""
-        if not url:
-            continue
-        r = fetch_blog_resource(url, why, node.id, blogs_dir)
-        if r:
-            append_resource(r); out.append(r)
-
-    for item in plan_json.get("youtube_videos", [])[:2]:
-        if isinstance(item, dict):
-            ref = item.get("url_or_id") or item.get("url") or item.get("id")
-            title = item.get("title", "")
-            why = item.get("why", "")
-        else:
-            ref = item; title = ""; why = ""
-        if not ref:
-            continue
-        r = fetch_youtube_resource(ref, title, why, node.id, transcripts_dir)
-        if r:
-            append_resource(r); out.append(r)
-
-    return out
+def fetch_for_node(node: LearningNode, registry: SourceRegistry | None = None) -> list[Resource]:
+    registry = registry or load_source_registry()
+    plan_json = plan_source_fetches(node, registry)
+    return run_source_providers(node, registry, plan_json)

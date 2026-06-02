@@ -8,9 +8,13 @@
 ## 它能做什么
 
 - **路径规划**:给一个目标,产出 4–6 阶段、每阶段 3–5 节点的可执行计划,每个节点有可验证的产出标准
-- **资源获取**:自动从 arxiv 下载论文 PDF、git clone 推荐代码仓库到本地 `library/`(开放源全自动)
+- **资源获取**:默认从 arxiv / GitHub / YouTube / Web / 本地目录获取资源,也支持按工作区配置自定义 source
+- **结构化课件**:把资源转成 Courseware JSON,支持段落、表格、公式、代码、图解、视频片段和检查点问题
 - **答疑互动**:Tutor 带着节点上下文 + 历史对话回答,不寒暄、不啰嗦
 - **自测反馈**:每个节点 5 题(概念辨析 / 推导 / 代码 debug / 讨论),AI 评分 + 给具体改进建议
+- **证据链**:资源会记录是否被课件、引用、自测、归档使用过,避免只囤资料不用
+- **今日任务**:Web 首页给出唯一推荐下一步,例如抓资源、生成课件、开始自测、补弱或推进
+- **能力看板**:展示掌握节点、薄弱节点、资源利用率、平均自测分和估时进度
 - **行业最佳实践**:从"踩过坑的工程师"角度给 must-do、common mistakes、preferred tools
 - **状态机驱动**:Agent 知道你在哪、上一步做得怎样、下一步该干什么——不是工具集
 
@@ -133,7 +137,25 @@ uvicorn rl_agent_tutor.server:create_app --factory --host 127.0.0.1 --port 8765
 ```bash
 pytest -q
 python -m compileall -q src/rl_agent_tutor tests
+node --check src/rl_agent_tutor/web/app.js
 ```
+
+Web UI 的源码在 `src/rl_agent_tutor/web/`。`src/rl_agent_tutor/static/index.html` 是生成产物,不要手改。修改 `web/index.html`、`web/style.css` 或 `web/app.js` 后运行:
+
+```bash
+python scripts/build_static.py
+```
+
+`pytest -q` 会检查生成产物是否和源码一致。
+
+新增能力的组合回归在 `tests/api/test_capability_regression.py` 中,覆盖:
+
+- 自定义资源源加载
+- 今日任务推荐动作
+- 结构化课件返回
+- 资源证据链状态推进
+- 自测提交后的掌握度变化
+- 能力看板数据
 
 真实端到端 smoke 测试默认跳过,需要显式开启:
 
@@ -163,6 +185,54 @@ workspace/
 ```
 
 文件全是人类可读的 JSON / JSONL,**纯文本可备份、可 git 跟踪、可手改**。
+
+## 资源源配置
+
+`rl-agent fetch` 默认会从 arxiv、GitHub、YouTube、网页文章和本地资料目录推荐资源。你可以在当前工作区新增 `config/sources.yaml` 覆盖默认源或追加自定义源:
+
+```yaml
+defaults:
+  enabled:
+    - arxiv
+    - github
+    - youtube
+    - website
+
+custom_sources:
+  - id: hf-blog
+    type: rss
+    name: Hugging Face Blog
+    url: https://huggingface.co/blog/feed.xml
+    priority: core
+
+  - id: local-papers
+    type: local_directory
+    name: Local Papers
+    path: library/manual/papers
+    priority: core
+```
+
+当前版本会把启用的资源源注入推荐提示,并在抓取结果中记录 `source_id` 和 `priority`。后续版本会把每类 source provider 拆成独立抓取器。
+
+## 学习闭环数据
+
+资源现在带有生命周期字段:
+
+| 字段 | 说明 |
+|---|---|
+| `source_id` | 来自哪个默认或自定义资源源 |
+| `priority` | `core` / `normal` / `supplemental` |
+| `status` | `fetched` / `read` / `cited` / `tested` / `archived` / `rejected` |
+| `used_by` | 被课件、Tutor 引用、自测或归档使用的证据 |
+
+课件会同时保存:
+
+```text
+library/notes/courseware/<node>_<slug>.md
+library/notes/courseware/<node>_<slug>.json
+```
+
+`.json` 是结构化课件数据,Web UI 优先渲染它;`.md` 保持纯文本可读和导出兼容。
 
 ---
 

@@ -66,6 +66,18 @@ class Resource(BaseModel):
     local_path: Optional[str] = None
     fetched_at: str = Field(default_factory=lambda: datetime.now().isoformat())
     summary: str = ""
+    source_id: str = ""
+    priority: Literal["core", "normal", "supplemental"] = "normal"
+    status: Literal[
+        "recommended",
+        "fetched",
+        "read",
+        "cited",
+        "tested",
+        "archived",
+        "rejected",
+    ] = "fetched"
+    used_by: list[str] = Field(default_factory=list)
 
 
 class TrajectoryEntry(BaseModel):

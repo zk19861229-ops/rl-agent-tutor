@@ -3,6 +3,8 @@ RAG-enabled: when local PDF index is available, retrieves relevant passages and
 asks the model to cite them.
 """
 from __future__ import annotations
+from typing import Literal
+
 from .llm import chat_multi
 from .models import LearningNode
 from .store import load_trajectory
@@ -37,14 +39,24 @@ CITATION POLICY (very important):
 - Never invent citations. Only cite passages explicitly listed.
 """
 
+TutorMode = Literal["explain", "check_understanding", "advance_task"]
+
+MODE_INSTRUCTIONS = {
+    "explain": "Mode: 解释概念。先给定义，再给机制、例子、常见误区，最后给 2 个自检问题。",
+    "check_understanding": "Mode: 检查我的理解。判断 learner 的说法哪里对/哪里不完整，给出修正版和下一步练习。",
+    "advance_task": "Mode: 帮我推进任务。把回答转成可执行下一步，输出 3-5 个动作和完成标准。",
+}
+
 
 def ask(node: LearningNode, stage_name: str, question: str,
-        history_limit: int = 6, use_rag: bool = True) -> tuple[str, list[dict]]:
+        history_limit: int = 6, use_rag: bool = True,
+        mode: TutorMode = "explain") -> tuple[str, list[dict]]:
     """Returns (answer_text, citations_used)."""
     sys = TUTOR_SYSTEM_TPL.format(
         nid=node.id, stage=stage_name, name=node.name,
         desc=node.description, objs=", ".join(node.objectives) or "(none)",
     )
+    sys += "\n\n" + MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["explain"])
 
     citations: list[dict] = []
     if use_rag:

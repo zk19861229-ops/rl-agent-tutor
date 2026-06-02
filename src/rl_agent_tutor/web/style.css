@@ -63,3 +63,32 @@ textarea{resize:vertical;font-family:inherit}
 .res .meta{color:var(--mut);font-size:11px;margin-top:2px}
 .dot-state{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mut);margin-right:6px}
 .dot-state.studying{background:var(--pri)}.dot-state.self_testing{background:#a371f7}.dot-state.advancing{background:var(--ok)}.dot-state.done{background:var(--ok)}
+.courseware h2{font-size:17px;margin:0 0 10px}
+.cw-objectives{background:#f6f8fa;border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:12px}
+.cw-section{border-top:1px solid var(--bd);padding-top:12px;margin-top:14px}
+.cw-section h3{font-size:15px;color:var(--txt);margin-bottom:8px}
+.cw-section h4{font-size:13px;color:var(--txt);margin-bottom:6px}
+.cw-block{background:#fff;border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin:8px 0;overflow:hidden}
+.cw-block.callout{border-left:4px solid var(--focus);background:#fff8f0}
+.cw-block.quiz{border-left:4px solid var(--pri);background:#f6fbff}
+.cw-block.video{border-left:4px solid #8250df;background:#fbfaff}
+.cw-block.diagram{background:#f8fafc}
+.cw-block.table{overflow-x:auto}
+.cw-block table{width:100%;border-collapse:collapse;font-size:12px}
+.cw-block th,.cw-block td{border:1px solid var(--bd);padding:6px 8px;text-align:left;vertical-align:top}
+.cw-block th{background:#f6f8fa;font-weight:600}
+.cw-formula{font-family:ui-monospace,monospace;background:#1f2328;color:#f0f3f6;border-radius:6px;padding:10px;overflow-x:auto}
+.cw-diagram-label{display:inline-block;font-size:10px;background:#eaeef2;color:#57606a;border-radius:4px;padding:1px 6px;margin-bottom:6px;text-transform:uppercase}
+.cw-video-frame{position:relative;width:100%;aspect-ratio:16/9;background:#1f2328;border-radius:8px;overflow:hidden;margin:8px 0}
+.cw-video-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.cw-video-summary{margin:6px 0}
+.cw-segments{display:grid;gap:6px;margin-top:8px}
+.cw-segment{background:#fff;border:1px solid var(--bd);border-radius:6px;padding:8px 10px;font-size:12px}
+.cw-checkpoint{margin-top:5px;color:#0969da}
+.coach-card{border-left:4px solid var(--pri);background:#fbfdff}
+.coach-label{font-size:16px;font-weight:700;color:var(--txt);margin-bottom:4px}
+.coach-reason{font-size:13px;color:var(--mut)}
+.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.metric{border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:#fff}
+.metric span{display:block;font-size:11px;color:var(--mut);margin-bottom:4px}
+.metric strong{font-size:20px}

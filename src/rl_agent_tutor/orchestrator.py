@@ -72,33 +72,9 @@ def advance_to_next(plan: LearningPlan) -> str | None:
 
 
 def suggest_next_action(plan: LearningPlan) -> str:
-    """Tell the learner what they should do next, based on plan state."""
+    """Compatibility wrapper. Learner-facing recommendations live in workflow."""
     if normalize_state(plan):
         save_plan(plan)
-    cur = plan.find_node(plan.current_node_id) if plan.current_node_id else None
-    if plan.state == "done":
-        return "🎉 Plan complete. Run `rl-agent review-stage` for a per-stage retrospective, or set a new goal with `rl-agent plan`."
-    if not cur:
-        return "Run `rl-agent plan \"<your goal>\"` to start."
-    if plan.state == "studying":
-        return (
-            f"Current node: {cur.id} {cur.name}\n"
-            f"  → fetch resources:  rl-agent fetch\n"
-            f"  → ask the tutor:    rl-agent ask \"<your question>\"\n"
-            f"  → industry tips:    rl-agent practices\n"
-            f"  → when ready:       rl-agent test"
-        )
-    if plan.state == "self_testing":
-        return (
-            f"You're mid-test on {cur.id} {cur.name}.\n"
-            f"  → run a fresh quiz:  rl-agent test\n"
-            f"  → mark complete:     rl-agent advance"
-        )
-    if plan.state == "advancing":
-        return (
-            f"You passed the test on {cur.id} {cur.name}.\n"
-            f"  → confirm + move on: rl-agent advance\n"
-            f"  → keep studying:     rl-agent ask \"...\"  (state will reset)"
-        )
-    return f"(unknown state: {plan.state})"
+    from .services import workflow
 
+    return workflow.suggest_next_action_text(plan)

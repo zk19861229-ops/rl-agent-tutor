@@ -9,7 +9,7 @@ def test_fetch_for_current_node_records_trajectory(sample_plan, monkeypatch):
     monkeypatch.setattr(
         resources.librarian,
         "fetch_for_node",
-        lambda node: [Resource(node_id=node.id, kind="blog", title="Blog")],
+        lambda node, registry=None: [Resource(node_id=node.id, kind="blog", title="Blog")],
     )
 
     result = resources.fetch_for_current_node()
@@ -17,6 +17,7 @@ def test_fetch_for_current_node_records_trajectory(sample_plan, monkeypatch):
     assert result.node_id == "0.1"
     assert result.resources[0].title == "Blog"
     assert load_trajectory("0.1")[-1].content == "fetched 1 resources"
+    assert load_trajectory("0.1")[-1].meta["sources"]
 
 
 def test_fetch_blog_for_current_node_appends_resource(sample_plan, monkeypatch):
@@ -31,4 +32,6 @@ def test_fetch_blog_for_current_node_appends_resource(sample_plan, monkeypatch):
     resource = resources.fetch_blog_for_current_node("https://example.com")
 
     assert resource.title == "Blog"
+    assert resource.source_id == "manual-blog"
+    assert resource.status == "fetched"
     assert load_resources("0.1")[0].url == "https://example.com"

@@ -81,4 +81,5 @@ def post_test_submit(req: TestSubmitReq):
         "overall_score": result.overall_score,
         "summary": result.summary,
         "state": result.plan_state,
+        "weak_areas": result.weak_areas,
     }

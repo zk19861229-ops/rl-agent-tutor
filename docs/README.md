@@ -7,6 +7,7 @@
 | 理解产品定位、用户场景、为什么做 | [PRD.md](./PRD.md) |
 | 理解技术实现、模块边界、设计权衡 | [TECH-DESIGN.md](./TECH-DESIGN.md) |
 | 一眼看懂系统怎么搭、各模块怎么协作 | [architecture.md](./architecture.md) |
+| 查看本轮产品化重构交付内容 | [REFACTOR-SUMMARY.md](./REFACTOR-SUMMARY.md) |
 
 ---
 
@@ -20,6 +21,9 @@
 
 ### 📐 [architecture.md](./architecture.md) — 架构图
 > 5 张 mermaid 图：分层架构 / Agent 时序协作 / 状态机 / 数据流 / RAG 管线
+
+### 🔧 [REFACTOR-SUMMARY.md](./REFACTOR-SUMMARY.md) — 重构收尾说明
+> 资源源配置 / 证据链 / 结构化课件 / 今日任务 / 能力看板 / 新增回归测试
 
 ---
 

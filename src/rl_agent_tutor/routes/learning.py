@@ -22,6 +22,11 @@ class GotoReq(BaseModel):
     node_id: str
 
 
+class AdvanceReq(BaseModel):
+    force: bool = False
+    reason: str = ""
+
+
 @router.get("/api/plan")
 def get_plan():
     status = learning_service.get_plan_status()
@@ -31,6 +36,7 @@ def get_plan():
         "plan": status.plan.model_dump(),
         "provider": provider_info(),
         "next_action": status.next_action,
+        "recommended_action": status.recommended_action.to_dict(),
     }
 
 
@@ -52,15 +58,26 @@ def post_goto(req: GotoReq):
 
 
 @router.post("/api/advance")
-def post_advance():
+def post_advance(req: AdvanceReq | None = None):
+    req = req or AdvanceReq()
     try:
-        result = learning_service.advance_current_node()
+        result = learning_service.advance_current_node(force=req.force, reason=req.reason)
     except learning_service.PlanNotFoundError:
         raise HTTPException(404, "No plan yet. Create one via POST /api/plan.")
     except learning_service.NoCurrentNodeError as e:
         raise HTTPException(400, str(e))
+    except learning_service.AdvanceBlockedError as e:
+        raise HTTPException(
+            409,
+            {
+                "message": "当前节点未满足推进门槛。",
+                "node_id": e.node_id,
+                "reasons": e.reasons,
+            },
+        )
     return {
         "completed": result.completed_node_id,
         "next": result.next_node_id,
         "plan": result.plan.model_dump(),
+        "gate": result.gate.to_dict(),
     }

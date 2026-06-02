@@ -71,6 +71,11 @@ src/rl_agent_tutor/
 │   ├── rag.py              # BM25 + LLM rerank
 │   ├── indexer.py          # PDF → chunk → BM25
 │   ├── fetchers.py         # 博客 / YouTube 字幕抓取
+│   ├── sources/            # 可配置资源源 registry
+│   ├── services/evidence.py # 资源证据链
+│   ├── services/workflow.py # 今日任务推荐动作
+│   ├── services/dashboard.py # 能力看板指标
+│   ├── courseware_schema.py # 结构化课件模型
 │   ├── store.py            # JSON/JSONL 持久化
 │   ├── workspaces.py       # 多工作区管理
 │   ├── config.py           # 环境变量 + 工作区解析
@@ -83,6 +88,11 @@ src/rl_agent_tutor/
     ├── com.rlagent.{web,daemon}.plist  # macOS launchd
     └── rl-agent-{web,daemon}.service   # Linux systemd user
 ```
+
+Web UI 源码以 `src/rl_agent_tutor/web/index.html`、`style.css`、`app.js`
+为准。`src/rl_agent_tutor/static/index.html` 是通过
+`python scripts/build_static.py` 生成的单文件兼容产物,由
+`tests/unit/test_static_build.py` 防止漂移。
 
 **模块依赖原则**：Agent 层只能依赖核心服务层；核心服务层之间允许相互依赖；入口层调用 Agent 层。
 
@@ -127,6 +137,10 @@ class Resource:
     local_path: str | None
     fetched_at: str
     summary: str
+    source_id: str
+    priority: "core" | "normal" | "supplemental"
+    status: "recommended" | "fetched" | "read" | "cited" | "tested" | "archived" | "rejected"
+    used_by: list[str]
 
 class TrajectoryEntry:
     ts: str
@@ -155,6 +169,19 @@ class ExerciseSession:
     started_at: str
     finished_at: str | None
     overall_score: float | None
+
+class Courseware:
+    node_id: str
+    title: str
+    learning_objectives: list[str]
+    sections: list[CoursewareSection]
+    key_takeaways: list[str]
+    references: list[CoursewareReference]
+
+class ContentBlock:
+    type: "paragraph" | "callout" | "formula" | "code" | "table" | "diagram" | "image" | "video" | "quiz" | "reference"
+    title: str
+    content: dict
 ```
 
 ### 3.2 文件布局

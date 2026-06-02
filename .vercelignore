@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+.git/
+.pytest_cache/
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
+workspace/
+workspaces/
+deploy/

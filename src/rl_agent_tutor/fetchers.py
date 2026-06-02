@@ -87,6 +87,46 @@ def _pick_main(soup: BeautifulSoup) -> str:
     return _strip(body)
 
 
+def _pick_main_node(soup: BeautifulSoup):
+    for sel in ["article", "main", "[role=main]", ".post", ".entry-content", "#content"]:
+        node = soup.select_one(sel)
+        if node:
+            txt = _strip(BeautifulSoup(str(node), "lxml"))
+            if len(txt) > 400:
+                return node
+    return soup.body or soup
+
+
+def _extract_image_urls(soup: BeautifulSoup, base_url: str) -> list[str]:
+    node = _pick_main_node(soup)
+    urls: list[str] = []
+    selectors = [
+        "figure img[src]",
+        "article img[src]",
+        "main img[src]",
+        ".entry-content img[src]",
+        "img[src]",
+    ]
+    for selector in selectors:
+        for img in node.select(selector):
+            src = img.get("src") or img.get("data-src") or img.get("data-original")
+            if not src and img.get("srcset"):
+                src = str(img.get("srcset")).split(",", 1)[0].strip().split(" ", 1)[0]
+            if not src:
+                continue
+            absolute = urllib.parse.urljoin(base_url, src)
+            if absolute not in urls and absolute.startswith(("http://", "https://")):
+                urls.append(absolute)
+            if len(urls) >= 5:
+                return urls
+    og = soup.select_one('meta[property="og:image"], meta[name="twitter:image"]')
+    if og and og.get("content"):
+        absolute = urllib.parse.urljoin(base_url, str(og.get("content")))
+        if absolute not in urls and absolute.startswith(("http://", "https://")):
+            urls.append(absolute)
+    return urls
+
+
 def fetch_blog(url: str) -> dict:
     """Return {'title':..., 'text':..., 'url':...} for a blog/article URL."""
     try:
@@ -125,7 +165,7 @@ def fetch_blog(url: str) -> dict:
     text = _pick_main(soup)
     # collapse blank lines
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return {"title": title or url, "text": text, "url": url}
+    return {"title": title or url, "text": text, "url": url, "images": _extract_image_urls(soup, url)}
 
 
 def save_blog_md(blog: dict, target_dir: Path, slug_hint: str = "") -> Path:
@@ -139,7 +179,13 @@ def save_blog_md(blog: dict, target_dir: Path, slug_hint: str = "") -> Path:
     while target.exists():
         target = target_dir / f"{base}_{i}.md"
         i += 1
-    body = f"# {blog.get('title','(untitled)')}\n\nSource: {blog.get('url','')}\n\n---\n\n{blog.get('text','')}\n"
+    images = blog.get("images") or []
+    image_block = ""
+    if images:
+        image_block = "\n\n## Extracted images\n" + "\n".join(
+            f"![figure {index}]({url})" for index, url in enumerate(images[:5], start=1)
+        )
+    body = f"# {blog.get('title','(untitled)')}\n\nSource: {blog.get('url','')}\n\n---\n\n{blog.get('text','')}{image_block}\n"
     target.write_text(body, encoding="utf-8")
     return target
 

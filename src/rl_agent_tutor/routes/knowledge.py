@@ -71,3 +71,11 @@ async def post_weekly_review():
     except learning_service.PlanNotFoundError:
         raise HTTPException(404, "No plan yet. Create one via POST /api/plan.")
     return {"file": str(target), "markdown": target.read_text(encoding="utf-8")}
+
+
+@router.post("/api/review/weekly/apply")
+def post_apply_weekly_review():
+    try:
+        return knowledge_service.apply_latest_weekly_review()
+    except learning_service.PlanNotFoundError:
+        raise HTTPException(404, "No plan yet. Create one via POST /api/plan.")

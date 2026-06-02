@@ -17,6 +17,7 @@ from .models import TrajectoryEntry, ExerciseSession
 from . import tutor, examiner, practice, workspaces, orchestrator
 from .llm import provider_info
 from .services import knowledge as knowledge_service
+from .services import evidence as evidence_service
 from .services import learning as learning_service
 from .services import resources as resources_service
 from .services import testing as testing_service
@@ -202,6 +203,7 @@ def ask(question: str = typer.Argument(..., help="Your question")):
                                       meta={"citations": citations}))
     console.print(Panel(Markdown(ans), title=f"Tutor · node {n.id}", border_style="cyan"))
     if citations:
+        evidence_service.mark_node_resources(n.id, status="cited", used_by="tutor:ask")
         console.print("\n[dim]Sources used:[/dim]")
         for c in citations:
             console.print(f"  [cyan][{c['doc_id']} · §{c['section']} · p.{c['page']}][/cyan]")
@@ -269,12 +271,22 @@ def test():
 
 
 @app.command()
-def advance():
+def advance(
+    force: bool = typer.Option(False, "--force", help="Override the advance gate."),
+    reason: str = typer.Option("", "--reason", help="Reason for overriding the gate."),
+):
     """Mark current node complete and move to the next pending node."""
     p, n, s = _require_current_node()
     if not typer.confirm(f"Mark node {n.id} ({n.name}) as completed?", default=True):
         raise typer.Exit()
-    result = learning_service.advance_current_node()
+    try:
+        result = learning_service.advance_current_node(force=force, reason=reason)
+    except learning_service.AdvanceBlockedError as e:
+        console.print("[yellow]Cannot advance yet:[/yellow]")
+        for item in e.reasons:
+            console.print(f"  - {item}")
+        console.print('[dim]Use `rl-agent advance --force --reason "..."` only when you intentionally override this gate.[/dim]')
+        raise typer.Exit(code=1)
     completed_stage = orchestrator.stage_just_completed(result.plan, result.completed_node_id)
     if result.next_node_id:
         nxt = result.plan.find_node(result.next_node_id)
