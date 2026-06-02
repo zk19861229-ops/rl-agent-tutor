@@ -1,4 +1,5 @@
 let state={plan:null,stats:null,test:null,recommendedAction:null,sources:[]};
+let processState={timer:null,startedAt:0,title:'',steps:[],tips:[],finished:false};
 
 async function api(method,path,body){
   const opt={method,headers:{'Content-Type':'application/json'}};
@@ -18,6 +19,69 @@ async function api(method,path,body){
 }
 function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800)}
 function escapeHtml(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function startProcess(title, steps, tips=[]){
+  clearProcessTimer();
+  processState={timer:null,startedAt:Date.now(),title,steps:steps.map(s=>({label:s,detail:'',status:'pending'})),tips,finished:false};
+  setProcessStep(0,'active');
+  const panel=document.getElementById('processPanel');
+  if(panel){panel.style.display='block';panel.scrollIntoView({behavior:'smooth',block:'nearest'})}
+  processState.timer=setInterval(renderProcess,1000);
+  renderProcess();
+}
+function clearProcessTimer(){
+  if(processState.timer){clearInterval(processState.timer);processState.timer=null}
+}
+function setProcessStep(index,status='active',detail=''){
+  if(!processState.steps.length)return;
+  processState.steps=processState.steps.map((s,i)=>{
+    if(i<index&&s.status!=='error')return {...s,status:'done'};
+    if(i===index)return {...s,status,detail:detail||s.detail};
+    return s;
+  });
+  renderProcess();
+}
+function finishProcess(message='已完成'){
+  if(!processState.steps.length)return;
+  processState.steps=processState.steps.map(s=>s.status==='error'?s:{...s,status:'done'});
+  processState.finished=true;
+  clearProcessTimer();
+  const tip=document.getElementById('processTip');
+  if(tip)tip.textContent=message;
+  renderProcess();
+}
+function failProcess(message){
+  if(!processState.steps.length)return;
+  const active=processState.steps.findIndex(s=>s.status==='active');
+  setProcessStep(active>=0?active:processState.steps.length-1,'error',message);
+  processState.finished=true;
+  clearProcessTimer();
+  const tip=document.getElementById('processTip');
+  if(tip)tip.textContent='失败: '+message;
+}
+function renderProcess(){
+  const panel=document.getElementById('processPanel');
+  if(!panel||!processState.steps.length)return;
+  const elapsed=Math.max(0,Math.floor((Date.now()-processState.startedAt)/1000));
+  const title=document.getElementById('processTitle');
+  const time=document.getElementById('processElapsed');
+  const steps=document.getElementById('processSteps');
+  const tip=document.getElementById('processTip');
+  if(title)title.textContent=processState.title;
+  if(time)time.textContent=elapsed+'s';
+  if(steps){
+    steps.innerHTML=processState.steps.map((s,i)=>{
+      const mark=s.status==='done'?'✓':s.status==='error'?'!':(i+1);
+      return `<div class="process-step ${s.status}">
+        <div class="mark">${mark}</div>
+        <div><strong>${escapeHtml(s.label)}</strong>${s.detail?`<div class="detail">${escapeHtml(s.detail)}</div>`:''}</div>
+      </div>`;
+    }).join('');
+  }
+  if(tip&&!processState.finished){
+    const matched=[...processState.tips].reverse().find(x=>elapsed>=x.after);
+    tip.textContent=matched?matched.text:'正在执行,页面会保留每一步的状态。';
+  }
+}
 function md2html(md){
   let h=escapeHtml(md);
   h=h.replace(/```(\w*)\n([\s\S]*?)```/g,(m,l,c)=>`<pre><code>${c}</code></pre>`);
@@ -188,8 +252,29 @@ async function createPlan(){
   const goal=document.getElementById('goal').value.trim();
   if(!goal){toast('请填写学习目标');return}
   const level=document.getElementById('level').value.trim();
+  startProcess('生成学习计划',[
+    '校验学习目标和当前水平',
+    '调用规划 Agent 拆解阶段',
+    '生成学习节点和推进顺序',
+    '保存计划并刷新页面'
+  ],[
+    {after:10,text:'规划通常需要等待模型返回,如果长时间停留请检查 LLM 配置。'},
+    {after:25,text:'仍在等待规划结果,常见卡点是模型响应慢或环境变量未配置。'}
+  ]);
   toast('生成中,通常 20–40 秒...');
-  try{await api('POST','/api/plan',{goal,level});await refreshAll();toast('计划已生成')}catch(e){alert('失败: '+e.message)}
+  try{
+    setProcessStep(0,'done','目标已读取');
+    setProcessStep(1,'active','正在请求后端规划接口');
+    await api('POST','/api/plan',{goal,level});
+    setProcessStep(2,'done','阶段和节点已生成');
+    setProcessStep(3,'active','同步最新计划状态');
+    await refreshAll();
+    finishProcess('计划已生成,可以从当前节点开始学习。');
+    toast('计划已生成');
+  }catch(e){
+    failProcess(e.message);
+    alert('失败: '+e.message);
+  }
 }
 
 async function doAsk(){
@@ -228,19 +313,38 @@ async function renderQAHistory(){
   }
 }
 async function doFetch(){
+  startProcess('抓取资源',[
+    '读取当前节点和资源源配置',
+    '请求 Librarian 推荐候选资源',
+    '抓取 arxiv / GitHub / 网页 / 视频 / 本地资源',
+    '写入资源索引和 source health',
+    '渲染资源列表'
+  ],[
+    {after:12,text:'资源抓取可能受外部站点、git clone、视频字幕或本地文件扫描影响。'},
+    {after:30,text:'如果持续等待,优先检查网络访问、source 配置和 GitHub/arxiv 响应。'}
+  ]);
   toast('抓取中,可能要 30–60 秒(arxiv + git clone + 博客)...');
   const btns=document.querySelectorAll('[onclick*="doFetch"]');
   btns.forEach(b=>{b.disabled=true});
   try{
+    setProcessStep(0,'done','已定位当前学习节点');
+    setProcessStep(1,'active','正在生成推荐和候选列表');
     const r=await api('POST','/api/fetch');
+    setProcessStep(2,'done','后端抓取流程已返回');
     const items=r.resources||[];
     const byKind={};
     for(const x of items){byKind[x.kind]=(byKind[x.kind]||0)+1}
     const summary=Object.entries(byKind).map(([k,v])=>`${k}:${v}`).join(' · ')||'(空)';
+    setProcessStep(3,'done',`已写入 ${items.length} 项资源`);
+    setProcessStep(4,'active','正在更新页面资源列表');
     toast(`已抓 ${items.length} 项 (${summary})`);
     renderResourceList(items);                 // dedicated 资源 tab
     showInlineResources(items, summary);       // 学习页就近显示
-  }catch(e){alert('抓取失败: '+e.message)}
+    finishProcess(`资源抓取完成: ${items.length} 项 (${summary})`);
+  }catch(e){
+    failProcess(e.message);
+    alert('抓取失败: '+e.message);
+  }
   finally{btns.forEach(b=>{b.disabled=false})}
 }
 
@@ -260,6 +364,16 @@ async function doCourseware(){
 }
 
 async function loadCoursewareInline({force=false}={}){
+  startProcess(force?'重新生成课件':'生成课件',[
+    '读取当前节点和已抓资源',
+    '抽取文本、图片和视频片段',
+    '生成结构化课件 JSON',
+    '写入 Markdown / JSON 产物',
+    '渲染课件和 Mermaid 图'
+  ],[
+    {after:10,text:'课件生成会等待模型综合资源,资源越多耗时越长。'},
+    {after:25,text:'如果卡住,通常是模型响应慢、PDF/网页抽取慢,或当前节点资源不足。'}
+  ]);
   const card=document.getElementById('inlineResCard');
   const body=document.getElementById('inlineResList');
   const cnt=document.getElementById('inlineResCount');
@@ -269,20 +383,28 @@ async function loadCoursewareInline({force=false}={}){
   cnt.textContent=force?'(重新综合中…)':'(综合中…)';
   body.innerHTML='<div class="empty"><span class="spinner"></span> AI 正在阅读资源并提炼课件,通常 20–40 秒...</div>';
   try{
+    setProcessStep(0,'done','已准备课件容器');
+    setProcessStep(1,'active','正在抽取并综合资源内容');
     const url='/api/courseware'+(force?'?force=true':'');
     const r=await api('POST',url);
+    setProcessStep(2,'done','结构化课件已返回');
     if(!r.markdown||!r.markdown.trim()){
       body.innerHTML=`<div class="empty">课件生成为空。可能是该节点还没抓到任何可读资源。<br>建议先点"📚 抓资源",或在 workspace/library/papers/ 手动放 PDF 后再试。</div>`;
       cnt.textContent='';
+      finishProcess('课件未生成内容,建议先补充或重新抓取资源。');
       return;
     }
+    setProcessStep(3,'done','课件产物已写入');
+    setProcessStep(4,'active','正在更新课件视图');
     body.innerHTML=r.courseware?renderCourseware(r.courseware):md2html(r.markdown);
     renderMermaidDiagrams(body);
     const meta=[];
     if(typeof r.sources_used==='number'){meta.push(`${r.sources_used}/${r.sources_total||r.sources_used} 资源`)}
     if(r.cached){meta.push('缓存')}
     cnt.textContent=meta.length?`(${meta.join(' · ')})`:'';
+    finishProcess(meta.length?`课件已生成: ${meta.join(' · ')}`:'课件已生成。');
   }catch(e){
+    failProcess(e.message);
     body.innerHTML='<div class="empty" style="color:var(--danger)">课件生成失败: '+escapeHtml(e.message)+'</div>';
     cnt.textContent='';
   }
@@ -578,12 +700,29 @@ async function loadKbNode(){
 }
 async function startTest(){
   const n=curNode();if(!n)return;
+  startProcess('开始自测',[
+    '读取当前学习节点',
+    '调用 Examiner 生成题目',
+    '初始化答题状态',
+    '渲染答题界面'
+  ],[
+    {after:8,text:'自测题生成依赖模型响应,如果等待较久可先确认当前节点已有课件或资源。'},
+    {after:20,text:'仍在等待出题结果,常见卡点是 LLM 响应慢或当前节点上下文不足。'}
+  ]);
   toast('出题中...');
   try{
+    setProcessStep(0,'done',`${n.id} · ${n.name||''}`);
+    setProcessStep(1,'active','正在请求出题接口');
     const r=await api('POST','/api/test/start',{node_id:n.id});
+    setProcessStep(2,'done',`已生成 ${(r.questions||[]).length} 题`);
     state.test={node_id:n.id,questions:r.questions,attempts:[],idx:0};
+    setProcessStep(3,'active','正在打开答题界面');
     renderTest();
-  }catch(e){alert('失败: '+e.message)}
+    finishProcess('自测已就绪,可以开始作答。');
+  }catch(e){
+    failProcess(e.message);
+    alert('失败: '+e.message);
+  }
 }
 function renderTest(){
   const t=state.test;const area=document.getElementById('testArea');
