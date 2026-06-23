@@ -127,21 +127,60 @@ def _anthropic_chat(system: str, messages: list[dict], *, model: str,
 
 # ---------- OpenRouter (OpenAI-compatible) ----------
 
+def _is_param_unsupported_400(text: str) -> bool:
+    """True if a 400 body indicates the model rejected a sampling param
+    (temperature / top_p) rather than a genuine auth/payload bug.
+
+    Different upstreams routed via OpenRouter phrase this differently, e.g.:
+      - Bedrock-hosted Claude: "`temperature` is deprecated for this model."
+      - DeepSeek reasoning models: "Invalid param: not support for model [...]"
+    so we match both the explicitly-named-param case and the generic
+    "param not supported/invalid" case.
+    """
+    t = (text or "").lower()
+    if "temperature" in t or "top_p" in t or "top-p" in t:
+        return True
+    if ("param" in t or "parameter" in t) and any(
+        w in t for w in ("not support", "unsupported", "deprecated", "invalid")
+    ):
+        return True
+    return False
+
+
 def _openrouter_chat(system: str, messages: list[dict], *, model: str,
                      max_tokens: int, temperature: float) -> str:
     payload_messages = [{"role": "system", "content": system}]
     payload_messages.extend(messages)
 
+    # Some models routed via OpenRouter (Bedrock-hosted Claude, DeepSeek
+    # reasoning models, ...) reject `temperature`. We send it optimistically and,
+    # if the model 400s specifically about an unsupported/deprecated sampling
+    # param, drop it and retry once. Models that accept temperature are
+    # unaffected. The flag persists across network retries within this call.
+    state = {"send_temperature": True}
+
+    def _build_payload() -> dict:
+        body = {
+            "model": model,
+            "messages": payload_messages,
+            "max_tokens": max_tokens,
+        }
+        if state["send_temperature"]:
+            body["temperature"] = temperature
+        return body
+
     def _do():
-        resp = _get_openrouter().post(
-            "/chat/completions",
-            json={
-                "model": model,
-                "messages": payload_messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            },
-        )
+        resp = _get_openrouter().post("/chat/completions", json=_build_payload())
+
+        # Model rejected a sampling param: drop `temperature` and retry once,
+        # before any other error handling.
+        if (resp.status_code >= 400 and state["send_temperature"]
+                and _is_param_unsupported_400(resp.text)):
+            state["send_temperature"] = False
+            print(f"[llm] openrouter: model '{model}' rejected a sampling param "
+                  f"(HTTP {resp.status_code}); retrying once without temperature.")
+            resp = _get_openrouter().post("/chat/completions", json=_build_payload())
+
         # 5xx is worth retrying; 4xx isn't (auth/payload bug)
         if 500 <= resp.status_code < 600:
             raise httpx.RemoteProtocolError(
